@@ -12,6 +12,7 @@ from backend.api.routes_strategy import router as strategy_router
 from backend.api.routes_backtest import router as backtest_router
 from backend.api.routes_analytics import router as analytics_router
 from backend.api.routes_ai import router as ai_router
+from backend.api.routes_intelligence import router as intelligence_router
 from backend.config import config
 
 app = FastAPI(
@@ -37,6 +38,7 @@ app.include_router(strategy_router)
 app.include_router(backtest_router)
 app.include_router(analytics_router)
 app.include_router(ai_router)
+app.include_router(intelligence_router)
 
 
 @app.middleware("http")
@@ -63,6 +65,7 @@ async def root():
             "backtest": "/api/backtest",
             "analytics": "/api/analytics",
             "ai": "/api/ai",
+            "intelligence": "/api/intelligence",
         },
     }
 

@@ -35,11 +35,37 @@ class AIConfig(BaseModel):
     parameter_changes_path: str = "ai_learning/parameter_changes.json"
 
 
+class IntelligenceConfig(BaseModel):
+    """Intelligent strategy engine configuration."""
+    # Regime detection thresholds (rule-based labelling)
+    atr_low_threshold: float = 30.0
+    momentum_threshold: float = 0.15
+    vol_high_threshold: float = 0.25
+    vol_low_threshold: float = 0.12
+    trend_strength_threshold: float = 0.3
+    # Meta controller settings
+    regime_check_interval: int = 15         # Minutes between regime checks
+    min_switch_confidence: float = 0.6      # Min confidence for mid-expiry switch
+    switch_cooldown_minutes: int = 30       # Cooldown after a switch
+    auto_train: bool = True                 # Auto-train ML model from history
+    # Feature engine settings
+    vol_window: int = 20
+    atr_window: int = 14
+    ema_window: int = 20
+    momentum_window: int = 10
+    volume_spike_multiplier: float = 2.0
+    # ML model settings
+    n_estimators: int = 100
+    regime_model_path: str = "ai_learning/regime_model.pkl"
+    trade_memory_path: str = "ai_learning/trade_memory.parquet"
+
+
 class AppConfig(BaseModel):
     """Top-level application configuration."""
     data: DataConfig = DataConfig()
     backtest: BacktestConfig = BacktestConfig()
     ai: AIConfig = AIConfig()
+    intelligence: IntelligenceConfig = IntelligenceConfig()
     db_path: str = "data/backtesting.duckdb"
     strategies_dir: str = "strategies"
     host: str = "0.0.0.0"
