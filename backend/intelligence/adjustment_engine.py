@@ -34,6 +34,7 @@ class Adjustment:
 # Adjustment type constants
 CONDOR_BREAKOUT = "condor_breakout"
 RISK_REDUCTION = "risk_reduction"
+NAKED_TO_SPREAD = "naked_to_spread"
 TREND_REVERSAL = "trend_reversal"
 TIME_DECAY = "time_decay"
 
@@ -90,8 +91,16 @@ class AdjustmentEngine:
             if adj:
                 return adj
 
-        # 3. Trend Reversal — spread direction flip
-        if "bull" in strategy_lower or "bear" in strategy_lower:
+        # 3. Naked to Spread conversion (Trend continuation with protection)
+        if "long_call" in strategy_lower or "long_put" in strategy_lower:
+            adj = self._check_naked_to_spread(
+                positions, spot_price, strategy_name, timestamp, features
+            )
+            if adj:
+                return adj
+
+        # 4. Trend Reversal — spread direction flip
+        if "bull" in strategy_lower or "bear" in strategy_lower or "long_call" in strategy_lower or "long_put" in strategy_lower:
             adj = self._check_trend_reversal(
                 positions, spot_price, strategy_name, timestamp, features, regime
             )
@@ -219,6 +228,56 @@ class AdjustmentEngine:
                     spot_price=spot_price,
                 )
 
+        return None
+
+    def _check_naked_to_spread(
+        self, positions, spot_price, strategy_name, timestamp, features
+    ) -> Optional[Adjustment]:
+        """
+        Convert Single Naked Leg to a Spread to reduce theta decay or lock in profits.
+        
+        Trigger: 
+          - Profit > 20% OR
+          - Momentum slowing down (abs momentum < 0.2)
+        """
+        if not positions:
+            return None
+            
+        total_pnl = sum(pos.pnl for pos in positions)
+        # Approximate ROI based on entry price
+        entry_cost = sum(pos.entry_price for pos in positions) * positions[0].lot_size
+        roi = (total_pnl / entry_cost) if entry_cost > 0 else 0
+        
+        momentum = features.get("momentum", 0)
+        
+        strategy_lower = strategy_name.lower()
+        
+        # Long Call -> Bull Call Spread
+        if "long_call" in strategy_lower and (roi > 0.2 or abs(momentum) < 0.2):
+            return Adjustment(
+                timestamp=timestamp,
+                from_strategy=strategy_name,
+                to_strategy="bull_call_spread",
+                adjustment_type=NAKED_TO_SPREAD,
+                reason=f"Locking profits/Reducing decay: ROI={roi:.1%}, Momentum={momentum:.2f}",
+                pnl_at_adjustment=total_pnl,
+                spot_price=spot_price,
+                legs_opened=[{"direction": "sell", "right": "CE", "strike_offset": 200, "quantity": 1}]
+            )
+            
+        # Long Put -> Bear Put Spread
+        if "long_put" in strategy_lower and (roi > 0.2 or abs(momentum) < 0.2):
+            return Adjustment(
+                timestamp=timestamp,
+                from_strategy=strategy_name,
+                to_strategy="bear_put_spread",
+                adjustment_type=NAKED_TO_SPREAD,
+                reason=f"Locking profits/Reducing decay: ROI={roi:.1%}, Momentum={momentum:.2f}",
+                pnl_at_adjustment=total_pnl,
+                spot_price=spot_price,
+                legs_opened=[{"direction": "sell", "right": "PE", "strike_offset": 200, "quantity": 1}]
+            )
+            
         return None
 
     def _check_trend_reversal(

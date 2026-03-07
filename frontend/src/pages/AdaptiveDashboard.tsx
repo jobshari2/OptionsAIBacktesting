@@ -210,6 +210,10 @@ export default function AdaptiveDashboard() {
         idx: i, equity: ec.equity, timestamp: ec.timestamp,
     }));
 
+    const indexTimelineData = (result?.index_timeline || []).map((it: any, i: number) => ({
+        idx: i, price: it.price, timestamp: it.timestamp, expiry: it.expiry,
+    }));
+
     const greeksTimelineData = (result?.greeks_timeline || []).map((g: any, i: number) => ({
         idx: i, timestamp: g.timestamp?.substring(11, 16) || i,
         delta: g.net_delta, gamma: g.net_gamma * 100,
@@ -540,6 +544,33 @@ export default function AdaptiveDashboard() {
                                 </div>
                             </div>
 
+                            {/* Nifty Index Chart - New Section */}
+                            <div className="card" style={{ marginBottom: 16 }}>
+                                <div className="card-header">
+                                    <div className="card-title">📉 Nifty Index (Entire Period)</div>
+                                    <div className="card-subtitle">Market movements during the backtest timeframe</div>
+                                </div>
+                                <ResponsiveContainer width="100%" height={250}>
+                                    <AreaChart data={indexTimelineData}>
+                                        <defs>
+                                            <linearGradient id="colorPrice" x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.3} />
+                                                <stop offset="95%" stopColor="#06b6d4" stopOpacity={0} />
+                                            </linearGradient>
+                                        </defs>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="#1e3a5f" />
+                                        <XAxis dataKey="idx" stroke="#4a5c78" fontSize={11} hide={true} />
+                                        <YAxis stroke="#4a5c78" fontSize={11} domain={['auto', 'auto']}
+                                            tickFormatter={(v: number) => v.toFixed(0)} />
+                                        <Tooltip
+                                            contentStyle={{ background: '#1a2235', border: '1px solid #1e3a5f', borderRadius: 8, fontSize: 12 }}
+                                            labelFormatter={(i: any) => indexTimelineData[i]?.timestamp || ''}
+                                            formatter={(v: any) => [v.toFixed(2), 'Nifty Price']} />
+                                        <Area type="monotone" dataKey="price" stroke="#06b6d4" fillOpacity={1} fill="url(#colorPrice)" />
+                                    </AreaChart>
+                                </ResponsiveContainer>
+                            </div>
+
                             {/* Equity Curve + Strategy Breakdown */}
                             <div className="grid-2" style={{ marginBottom: 16 }}>
                                 <div className="card">
@@ -660,6 +691,7 @@ export default function AdaptiveDashboard() {
                                         <table style={{ minWidth: 800 }}>
                                             <thead>
                                                 <tr>
+                                                    <th>Date</th>
                                                     <th>Entry Time</th>
                                                     <th>Exit Time</th>
                                                     <th>Strategy</th>
@@ -671,6 +703,9 @@ export default function AdaptiveDashboard() {
                                             <tbody>
                                                 {(result.trades || []).filter((t: any) => t.expiry === selectedResultExpiry).map((trade: any, i: number) => (
                                                     <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                                                        <td style={{ fontSize: 11, fontFamily: 'monospace', verticalAlign: 'top', paddingTop: 12 }}>
+                                                            {trade.entry_time.substring(0, 10)}
+                                                        </td>
                                                         <td style={{ fontSize: 11, fontFamily: 'monospace', verticalAlign: 'top', paddingTop: 12 }}>
                                                             {trade.entry_time.substring(11, 19)}
                                                         </td>
@@ -735,7 +770,7 @@ export default function AdaptiveDashboard() {
                                                 ))}
                                                 {(result.trades || []).filter((t: any) => t.expiry === selectedResultExpiry).length === 0 && (
                                                     <tr>
-                                                        <td colSpan={6} style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>
+                                                        <td colSpan={7} style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>
                                                             No trades executed for this expiry
                                                         </td>
                                                     </tr>

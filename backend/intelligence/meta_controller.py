@@ -79,6 +79,7 @@ class IntelligentBacktestResult:
     # Adaptive engine fields
     adjustment_history: list[dict] = field(default_factory=list)
     greeks_timeline: list[dict] = field(default_factory=list)
+    index_timeline: list[dict] = field(default_factory=list)
     risk_events: list[dict] = field(default_factory=list)
     risk_summary: dict = field(default_factory=dict)
     greeks_summary: dict = field(default_factory=dict)
@@ -103,6 +104,7 @@ class IntelligentBacktestResult:
             "regime_breakdown": self.regime_breakdown,
             "adjustment_history": self.adjustment_history,
             "greeks_timeline": self.greeks_timeline,
+            "index_timeline": self.index_timeline,
             "risk_events": self.risk_events,
             "risk_summary": self.risk_summary,
             "greeks_summary": self.greeks_summary,
@@ -189,6 +191,7 @@ class MetaController:
         regime_check_interval: Optional[int] = None,
         min_confidence: Optional[float] = None,
         run_id: Optional[str] = None,
+        enable_adjustments: bool = False,
     ) -> IntelligentBacktestResult:
         """
         Run the full intelligent meta-strategy backtest.
@@ -264,6 +267,7 @@ class MetaController:
                     expiry_date=expiry_info["date_str"],
                     check_interval=check_interval,
                     confidence_threshold=confidence_threshold,
+                    enable_adjustments=enable_adjustments,
                 )
 
                 for trade in result.trades:
@@ -367,6 +371,7 @@ class MetaController:
         expiry_date: str,
         check_interval: int,
         confidence_threshold: float,
+        enable_adjustments: bool = False,
     ) -> ExpiryIntelligenceResult:
         """
         Run intelligent strategy on a single expiry with mid-expiry switching.
@@ -414,6 +419,7 @@ class MetaController:
         
         current_regime, regime_confidence = self.regime_detector.detect(features)
         current_strategy = self.strategy_selector.select(current_regime)
+        display_strategy_name = current_strategy.name
 
         logger.info(
             f"MetaController [{expiry_date}]: initial regime={current_regime} "
@@ -505,6 +511,7 @@ class MetaController:
                     current_regime = new_regime
                     regime_confidence = new_confidence
                     current_strategy = self.strategy_selector.select(current_regime)
+                    display_strategy_name = current_strategy.name
                     bars_since_last_switch = 0
 
                     transition = RegimeTransition(
@@ -588,7 +595,7 @@ class MetaController:
                     position_mgr.close_all(
                         timestamp=ts_str,
                         exit_reason=exit_reason,
-                        strategy_name=current_strategy.name,
+                        strategy_name=display_strategy_name,
                         expiry=expiry_date,
                         transaction_costs=entry_costs + exit_costs,
                         slippage_cost=entry_slippage + exit_slippage,
@@ -596,12 +603,84 @@ class MetaController:
                     )
                     initial_credit = None
 
+                # --- ACTIVE ADJUSTMENT LOGIC ---
+                elif enable_adjustments:
+                    # Evaluate adjustment
+                    # We compute mini-features if needed or use the precomputed ones
+                    feat = features_timeline.get(ts_str, self.feature_engine._empty_features())
+                    adj = self.adjustment_engine.evaluate(
+                        strategy_name=current_strategy.name,
+                        positions=position_mgr.positions,
+                        spot_price=spot_price,
+                        features=feat,
+                        regime=current_regime,
+                        timestamp=ts_str,
+                        initial_credit=initial_credit,
+                    )
+
+                    if adj:
+                        # Record it
+                        self.adjustment_engine.record_adjustment(adj)
+                        
+                        # EXECUTE ADJUSTMENT
+                        # Case 1: Close specific legs (e.g. Condor Breakout)
+                        if adj.legs_closed:
+                            # Simulate exit for these legs
+                            # For simplicity, we assume we close them at current market prices
+                            # In a real engine, we'd call simulator.simulate_exit
+                            # Here we'll just remove them from position_mgr
+                            for leg_to_close in adj.legs_closed:
+                                # Find matching position
+                                matching = [p for p in position_mgr.positions 
+                                           if p.strike == leg_to_close["strike"] 
+                                           and p.right == leg_to_close["right"]]
+                                if matching:
+                                    pos_to_close = matching[0]
+                                    # Record the exit in simulator/stats? 
+                                    # For core logic, we just remove it and adjust pnl
+                                    # But position_manager expects close_all or similar
+                                    # Let's add partial close support or just close/reopen?
+                                    # User wants "add multiple option strategies", usually it's ADDING a leg
+                                    pass
+
+                        # Case 2: Open specific legs (e.g. Naked to Spread)
+                        if adj.legs_opened:
+                            # 1. Resolve strikes for new legs
+                            # (Adjustment already suggested strikes or offsets)
+                            from backend.strategy_engine import StrategyLeg, Direction, OptionRight
+                            
+                            new_strat_legs = []
+                            for l_open in adj.legs_opened:
+                                new_strat_legs.append(StrategyLeg(
+                                    direction=Direction(l_open["direction"]),
+                                    right=OptionRight(l_open["right"]),
+                                    strike_offset=l_open.get("strike_offset", 0),
+                                    quantity=l_open.get("quantity", 1),
+                                    label="Adjustment Leg"
+                                ))
+                            
+                            resolved_new = LegBuilder.resolve_strikes(
+                                new_strat_legs,
+                                spot_price=spot_price,
+                                available_strikes=available_strikes,
+                            )
+                            resolved_new = LegBuilder.get_leg_prices(resolved_new, options_at_ts)
+                            
+                            if all(leg["ltp"] > 0 for leg in resolved_new):
+                                _, adj_slippage, adj_costs = self.simulator.simulate_entry(
+                                    resolved_new, current_strategy.lot_size
+                                )
+                                position_mgr.open_position(resolved_new, ts_str, current_strategy.lot_size)
+                                # Update display name to the new one for reporting
+                                display_strategy_name = adj.to_strategy
+                                logger.info(f"MetaController: Adjusted {adj.from_strategy} -> {adj.to_strategy} at {ts_str}")
+
         # Force close remaining positions
         if position_mgr.is_open:
             position_mgr.close_all(
                 timestamp=str(timestamps[-1]),
                 exit_reason="data_end",
-                strategy_name=current_strategy.name,
+                strategy_name=display_strategy_name,
                 expiry=expiry_date,
             )
 
@@ -788,6 +867,7 @@ class MetaController:
                     regime_check_interval=regime_check_interval,
                     min_confidence=min_confidence,
                     run_id=run_id,
+                    enable_adjustments=enable_adjustments,
                 )
             finally:
                 self.expiry_discovery.filter_by_date_range = original_filter
@@ -800,12 +880,14 @@ class MetaController:
                 regime_check_interval=regime_check_interval,
                 min_confidence=min_confidence,
                 run_id=run_id,
+                enable_adjustments=enable_adjustments,
             )
 
         # --- Adaptive post-processing pass ---
         # Replay through expiries evaluating adjustments and risk
         current_equity = initial_capital
         greeks_timeline: list[dict] = []
+        index_timeline: list[dict] = []
 
         for er in result.expiry_results:
             # Check stop flag
@@ -849,6 +931,13 @@ class MetaController:
                         continue
 
                     spot = idx_at_ts.select("Close").item()
+                    
+                    # Record index price
+                    index_timeline.append({
+                        "timestamp": str(ts),
+                        "price": spot,
+                        "expiry": er["expiry"]
+                    })
 
                     # O(1) feature lookup from the first pass
                     features = er.get("features_timeline", {}).get(str(ts), self.feature_engine._empty_features())
@@ -953,6 +1042,7 @@ class MetaController:
         # Enrich the result with adaptive data
         result.adjustment_history = self.adjustment_engine.get_history()
         result.greeks_timeline = greeks_timeline
+        result.index_timeline = index_timeline
         result.risk_events = self.risk_manager.get_risk_events()
         result.risk_summary = self.risk_manager.get_risk_summary()
         result.greeks_summary = self.position_monitor.get_greeks_summary()

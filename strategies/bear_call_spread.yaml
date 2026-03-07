@@ -1,0 +1,23 @@
+name: bear_call_spread
+description: "Sell ATM Call and Buy OTM Call for bearish outlook with limited risk"
+type: directional
+setup:
+  trend: bearish
+  volatility: any
+entry:
+  entry_time: "09:20"
+legs:
+  - direction: sell
+    right: CE
+    strike_offset: 0
+    quantity: 1
+    label: "Sell ATM Call"
+  - direction: buy
+    right: CE
+    strike_offset: 200
+    quantity: 1
+    label: "Buy OTM Call"
+exit:
+  exit_time: "15:15"
+  stop_loss_pct: null
+  target_profit_pct: null
