@@ -8,6 +8,7 @@ import OptionChainExplorer from './pages/OptionChainExplorer';
 import StrategyAnimation from './pages/StrategyAnimation';
 import StrategyComparison from './pages/StrategyComparison';
 import AIOptimizer from './pages/AIOptimizer';
+import IntelligenceEngine from './pages/IntelligenceEngine';
 
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: '📊', section: 'Overview' },
@@ -18,6 +19,7 @@ const navItems = [
   { id: 'option-chain', label: 'Option Chain', icon: '🔗', section: 'Research' },
   { id: 'animation', label: 'Replay', icon: '▶️', section: 'Research' },
   { id: 'ai-optimizer', label: 'AI Optimizer', icon: '🤖', section: 'AI' },
+  { id: 'intelligence', label: 'Intelligence Engine', icon: '🧠', section: 'AI' },
 ];
 
 function App() {
@@ -33,6 +35,7 @@ function App() {
       case 'option-chain': return <OptionChainExplorer />;
       case 'animation': return <StrategyAnimation />;
       case 'ai-optimizer': return <AIOptimizer />;
+      case 'intelligence': return <IntelligenceEngine />;
       default: return <Dashboard />;
     }
   };
@@ -46,6 +49,7 @@ function App() {
     'option-chain': { title: 'Option Chain Explorer', subtitle: 'Historical option chain data' },
     animation: { title: 'Strategy Replay', subtitle: 'Minute-by-minute strategy animation' },
     'ai-optimizer': { title: 'AI Optimizer', subtitle: 'AI-powered strategy optimization' },
+    intelligence: { title: 'Intelligence Engine', subtitle: 'ML-powered regime detection & adaptive strategy switching' },
   };
 
   const sections = [...new Set(navItems.map(n => n.section))];

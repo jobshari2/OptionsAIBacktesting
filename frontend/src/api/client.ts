@@ -97,3 +97,36 @@ export const aiApi = {
     getSuggestions: (strategyName: string) =>
         fetchJSON(`/api/ai/suggestions/${strategyName}`),
 };
+
+// --- Intelligence Engine APIs ---
+export const intelligenceApi = {
+    getFeatures: (expiry: string) =>
+        fetchJSON(`/api/intelligence/features/${expiry}`),
+    getRegime: (expiry: string) =>
+        fetchJSON(`/api/intelligence/regime/${expiry}`),
+    getRegimeMapping: () =>
+        fetchJSON('/api/intelligence/regime-mapping'),
+    runIntelligentBacktest: (data: any) => {
+        const payload = { ...data };
+        if (payload.start_date) payload.start_date = formatToApiDate(payload.start_date);
+        if (payload.end_date) payload.end_date = formatToApiDate(payload.end_date);
+        return fetchJSON('/api/intelligence/run', { method: 'POST', body: JSON.stringify(payload) });
+    },
+    getExperience: (strategy?: string, regime?: string, limit?: number) => {
+        const params = new URLSearchParams();
+        if (strategy) params.set('strategy', strategy);
+        if (regime) params.set('regime', regime);
+        if (limit) params.set('limit', String(limit));
+        return fetchJSON(`/api/intelligence/experience?${params}`);
+    },
+    getExperiencePerformance: (regime?: string) => {
+        const params = regime ? `?regime=${regime}` : '';
+        return fetchJSON(`/api/intelligence/experience/performance${params}`);
+    },
+    getExperienceSummary: () =>
+        fetchJSON('/api/intelligence/experience/summary'),
+    trainModel: () =>
+        fetchJSON('/api/intelligence/train', { method: 'POST' }),
+    getModelStatus: () =>
+        fetchJSON('/api/intelligence/model-status'),
+};
