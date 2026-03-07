@@ -1,0 +1,27 @@
+name: bull_call_spread
+description: "Bull Call Spread - Buy lower CE, Sell higher CE for bullish view"
+lot_size: 25
+max_positions: 1
+tags: [bullish, limited-risk, spread, directional]
+
+legs:
+  - direction: buy
+    right: CE
+    strike_offset: 0
+    quantity: 1
+    label: "Buy ATM CE"
+  - direction: sell
+    right: CE
+    strike_offset: 200
+    quantity: 1
+    label: "Sell OTM CE"
+
+entry:
+  entry_time: "09:20"
+  trend_filter: bullish
+
+exit:
+  exit_time: "15:15"
+  stop_loss_pct: 50
+  target_profit_pct: 80
+  per_leg_sl: false

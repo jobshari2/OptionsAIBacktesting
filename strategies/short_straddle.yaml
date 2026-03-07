@@ -1,0 +1,31 @@
+name: short_straddle
+description: "Sell ATM Straddle - Profit from time decay in range-bound markets"
+lot_size: 25
+max_positions: 1
+tags: [neutral, theta, premium-selling]
+
+legs:
+  - direction: sell
+    right: CE
+    strike_offset: 0
+    quantity: 1
+    label: "Sell ATM CE"
+  - direction: sell
+    right: PE
+    strike_offset: 0
+    quantity: 1
+    label: "Sell ATM PE"
+
+entry:
+  entry_time: "09:20"
+  iv_percentile_min: null
+  iv_percentile_max: null
+  trend_filter: null
+
+exit:
+  exit_time: "15:15"
+  stop_loss_pct: 100
+  target_profit_pct: 50
+  stop_loss_multiplier: null
+  trailing_sl_pct: null
+  per_leg_sl: false

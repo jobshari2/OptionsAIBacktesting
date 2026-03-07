@@ -1,0 +1,26 @@
+name: ratio_spread
+description: "Ratio Call Spread - Buy 1 ATM CE, Sell 2 OTM CE"
+lot_size: 25
+max_positions: 1
+tags: [neutral-bullish, ratio, advanced]
+
+legs:
+  - direction: buy
+    right: CE
+    strike_offset: 0
+    quantity: 1
+    label: "Buy ATM CE"
+  - direction: sell
+    right: CE
+    strike_offset: 200
+    quantity: 2
+    label: "Sell 2x OTM CE"
+
+entry:
+  entry_time: "09:20"
+
+exit:
+  exit_time: "15:15"
+  stop_loss_points: 100
+  target_profit_pct: 60
+  per_leg_sl: false

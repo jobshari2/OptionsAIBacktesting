@@ -1,0 +1,27 @@
+name: bear_put_spread
+description: "Bear Put Spread - Buy higher PE, Sell lower PE for bearish view"
+lot_size: 25
+max_positions: 1
+tags: [bearish, limited-risk, spread, directional]
+
+legs:
+  - direction: buy
+    right: PE
+    strike_offset: 0
+    quantity: 1
+    label: "Buy ATM PE"
+  - direction: sell
+    right: PE
+    strike_offset: 200
+    quantity: 1
+    label: "Sell OTM PE"
+
+entry:
+  entry_time: "09:20"
+  trend_filter: bearish
+
+exit:
+  exit_time: "15:15"
+  stop_loss_pct: 50
+  target_profit_pct: 80
+  per_leg_sl: false

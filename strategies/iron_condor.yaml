@@ -1,0 +1,37 @@
+name: iron_condor
+description: "Iron Condor - Limited risk neutral strategy selling OTM spreads on both sides"
+lot_size: 25
+max_positions: 1
+tags: [neutral, theta, limited-risk, spread]
+
+legs:
+  - direction: sell
+    right: CE
+    strike_offset: 200
+    quantity: 1
+    label: "Sell OTM CE"
+  - direction: sell
+    right: PE
+    strike_offset: 200
+    quantity: 1
+    label: "Sell OTM PE"
+  - direction: buy
+    right: CE
+    strike_offset: 400
+    quantity: 1
+    label: "Buy Far OTM CE"
+  - direction: buy
+    right: PE
+    strike_offset: 400
+    quantity: 1
+    label: "Buy Far OTM PE"
+
+entry:
+  entry_time: "09:20"
+  iv_percentile_min: 50
+
+exit:
+  exit_time: "15:15"
+  stop_loss_pct: 100
+  target_profit_pct: 50
+  per_leg_sl: false

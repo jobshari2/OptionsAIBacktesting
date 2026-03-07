@@ -1,0 +1,36 @@
+name: iron_butterfly
+description: "Iron Butterfly - Sell ATM Straddle + Buy OTM Strangle for limited risk"
+lot_size: 25
+max_positions: 1
+tags: [neutral, theta, limited-risk, butterfly]
+
+legs:
+  - direction: sell
+    right: CE
+    strike_offset: 0
+    quantity: 1
+    label: "Sell ATM CE"
+  - direction: sell
+    right: PE
+    strike_offset: 0
+    quantity: 1
+    label: "Sell ATM PE"
+  - direction: buy
+    right: CE
+    strike_offset: 300
+    quantity: 1
+    label: "Buy OTM CE"
+  - direction: buy
+    right: PE
+    strike_offset: 300
+    quantity: 1
+    label: "Buy OTM PE"
+
+entry:
+  entry_time: "09:20"
+
+exit:
+  exit_time: "15:15"
+  stop_loss_pct: 100
+  target_profit_pct: 40
+  per_leg_sl: false
