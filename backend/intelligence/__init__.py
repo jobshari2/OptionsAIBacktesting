@@ -7,6 +7,9 @@ from .regime_detector import RegimeDetector
 from .strategy_selector import StrategySelector
 from .experience_memory import ExperienceMemory
 from .meta_controller import MetaController
+from .adjustment_engine import AdjustmentEngine
+from .risk_manager import RiskManager
+from .position_monitor import PositionMonitor
 
 __all__ = [
     "FeatureEngine",
@@ -14,4 +17,7 @@ __all__ = [
     "StrategySelector",
     "ExperienceMemory",
     "MetaController",
+    "AdjustmentEngine",
+    "RiskManager",
+    "PositionMonitor",
 ]

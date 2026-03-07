@@ -1,0 +1,19 @@
+name: long_call
+description: "Single-leg long call option for strong upward trends"
+type: directional
+setup:
+  trend: bullish
+  volatility: any
+entry:
+  entry_time: "09:20"
+  max_slippage: 0.05
+legs:
+  - direction: buy
+    right: CE
+    strike_offset: 0
+    quantity: 1
+    label: "Buy ATM Call"
+exit:
+  exit_time: "15:15"
+  stop_loss_pct: null
+  target_profit_pct: null

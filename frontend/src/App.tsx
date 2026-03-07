@@ -9,6 +9,7 @@ import StrategyAnimation from './pages/StrategyAnimation';
 import StrategyComparison from './pages/StrategyComparison';
 import AIOptimizer from './pages/AIOptimizer';
 import IntelligenceEngine from './pages/IntelligenceEngine';
+import AdaptiveDashboard from './pages/AdaptiveDashboard';
 
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: '📊', section: 'Overview' },
@@ -20,6 +21,7 @@ const navItems = [
   { id: 'animation', label: 'Replay', icon: '▶️', section: 'Research' },
   { id: 'ai-optimizer', label: 'AI Optimizer', icon: '🤖', section: 'AI' },
   { id: 'intelligence', label: 'Intelligence Engine', icon: '🧠', section: 'AI' },
+  { id: 'adaptive', label: 'Adaptive Engine', icon: '⚡', section: 'AI' },
 ];
 
 function App() {
@@ -36,6 +38,7 @@ function App() {
       case 'animation': return <StrategyAnimation />;
       case 'ai-optimizer': return <AIOptimizer />;
       case 'intelligence': return <IntelligenceEngine />;
+      case 'adaptive': return <AdaptiveDashboard />;
       default: return <Dashboard />;
     }
   };
@@ -50,6 +53,7 @@ function App() {
     animation: { title: 'Strategy Replay', subtitle: 'Minute-by-minute strategy animation' },
     'ai-optimizer': { title: 'AI Optimizer', subtitle: 'AI-powered strategy optimization' },
     intelligence: { title: 'Intelligence Engine', subtitle: 'ML-powered regime detection & adaptive strategy switching' },
+    adaptive: { title: 'Adaptive Engine', subtitle: 'Full adaptive backtesting with adjustments, risk management & Greeks monitoring' },
   };
 
   const sections = [...new Set(navItems.map(n => n.section))];

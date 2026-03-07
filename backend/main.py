@@ -13,6 +13,7 @@ from backend.api.routes_backtest import router as backtest_router
 from backend.api.routes_analytics import router as analytics_router
 from backend.api.routes_ai import router as ai_router
 from backend.api.routes_intelligence import router as intelligence_router
+from backend.api.routes_adaptive import router as adaptive_router
 from backend.config import config
 
 app = FastAPI(
@@ -39,6 +40,7 @@ app.include_router(backtest_router)
 app.include_router(analytics_router)
 app.include_router(ai_router)
 app.include_router(intelligence_router)
+app.include_router(adaptive_router)
 
 
 @app.middleware("http")

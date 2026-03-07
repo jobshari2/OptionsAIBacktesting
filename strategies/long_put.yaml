@@ -1,0 +1,19 @@
+name: long_put
+description: "Single-leg long put option for strong downward trends"
+type: directional
+setup:
+  trend: bearish
+  volatility: any
+entry:
+  entry_time: "09:20"
+  max_slippage: 0.05
+legs:
+  - direction: buy
+    right: PE
+    strike_offset: 0
+    quantity: 1
+    label: "Buy ATM Put"
+exit:
+  exit_time: "15:15"
+  stop_loss_pct: null
+  target_profit_pct: null

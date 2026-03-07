@@ -10,9 +10,9 @@ from .regime_detector import MarketRegime
 
 # Default regime → strategy mapping for Nifty Options
 DEFAULT_REGIME_MAPPING: dict[str, str] = {
-    MarketRegime.RANGE_BOUND: "iron_condor",
-    MarketRegime.TREND_UP: "bull_call_spread",
-    MarketRegime.TREND_DOWN: "bear_put_spread",
+    MarketRegime.RANGE_BOUND: "short_strangle",
+    MarketRegime.TREND_UP: "long_call",
+    MarketRegime.TREND_DOWN: "long_put",
     MarketRegime.HIGH_VOLATILITY: "long_straddle",
     MarketRegime.LOW_VOLATILITY: "short_strangle",
 }

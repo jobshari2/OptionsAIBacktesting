@@ -114,6 +114,106 @@ class FeatureEngine:
 
         return self.compute_features(filtered_index, filtered_options, filtered_futures)
 
+    def precompute_expiry_features(
+        self,
+        index_df: pl.DataFrame,
+        options_df: pl.DataFrame,
+    ) -> dict[str, dict[str, float]]:
+        """
+        Massively optimized feature pre-computation for an entire expiry day.
+        Returns a dictionary mapping string ISO timestamps to feature dictionaries.
+        Replaces calling compute_features_at_time repeatedly.
+        """
+        features_by_time: dict[str, dict[str, float]] = {}
+
+        if index_df.schema.get("Date") == pl.Utf8:
+            index_df = index_df.with_columns(pl.col("Date").str.to_datetime().alias("Date"))
+        if options_df is not None and options_df.schema.get("Date") == pl.Utf8:
+            options_df = options_df.with_columns(pl.col("Date").str.to_datetime().alias("Date"))
+
+        timestamps = index_df.select("Date").unique().sort("Date").to_series().to_list()
+        if not timestamps:
+            return {}
+
+        # Pre-group options by Date to avoid O(N^2) filter scans
+        options_by_date = {}
+        first_options = None
+        if options_df is not None and len(options_df) > 0:
+            for ts, data in options_df.group_by("Date"):
+                options_by_date[ts] = data
+            first_options = options_by_date.get(timestamps[0])
+
+        # State tracking for cumulative aggregations (iv_percentile)
+        atm_ce_history: list[float] = []
+
+        for i, ts in enumerate(timestamps):
+            idx_up_to = index_df.slice(0, i + 1)
+            ts_str = str(ts)
+            feats = {}
+
+            # --- Index features ---
+            feats["realized_volatility"] = self._realized_volatility(idx_up_to)
+            feats["atr"] = self._atr(idx_up_to)
+            feats["vwap_distance"] = self._vwap_distance(idx_up_to)
+            feats["trend_strength"] = self._trend_strength(idx_up_to)
+            feats["momentum"] = self._momentum(idx_up_to)
+            feats["volume_spike"] = self._volume_spike(idx_up_to)
+
+            # --- Options features ---
+            snapshot = options_by_date.get(ts)
+            if snapshot is not None and len(snapshot) > 0:
+                spot = idx_up_to["Close"].to_numpy()[-1]
+                atm_strike = int(round(spot / 50) * 50)
+                
+                # Update atm_ce_history for iv_percentile
+                atm_ce = snapshot.filter((pl.col("Strike") == atm_strike) & (pl.col("Right") == "CE"))
+                if len(atm_ce) > 0:
+                    prem = atm_ce["Close"].to_numpy()[-1]
+                    if prem > 0:
+                        atm_ce_history.append(prem)
+
+                # IV Percentile
+                if len(atm_ce_history) < 2:
+                    feats["iv_percentile"] = 50.0
+                else:
+                    cv = atm_ce_history[-1]
+                    mn = min(atm_ce_history)
+                    mx = max(atm_ce_history)
+                    feats["iv_percentile"] = 50.0 if mx == mn else float(np.clip((cv - mn) / (mx - mn) * 100, 0, 100))
+
+                # IV Skew
+                otm_offset = 200
+                otm_ce = snapshot.filter((pl.col("Strike") == atm_strike + otm_offset) & (pl.col("Right") == "CE"))
+                otm_pe = snapshot.filter((pl.col("Strike") == atm_strike - otm_offset) & (pl.col("Right") == "PE"))
+                ce_prem = otm_ce["Close"].to_numpy()[-1] if len(otm_ce) > 0 else 0.0
+                pe_prem = otm_pe["Close"].to_numpy()[-1] if len(otm_pe) > 0 else 0.0
+                feats["iv_skew"] = float((pe_prem - ce_prem) / spot * 100) if spot > 0 else 0.0
+
+                # PCR
+                if "Volume" in snapshot.columns:
+                    ce_vol = snapshot.filter(pl.col("Right") == "CE")["Volume"].sum()
+                    pe_vol = snapshot.filter(pl.col("Right") == "PE")["Volume"].sum()
+                    feats["put_call_ratio"] = float(pe_vol / ce_vol) if ce_vol > 0 else 1.0
+                else:
+                    feats["put_call_ratio"] = 1.0
+
+                # OI Change
+                if "OI" in snapshot.columns and first_options is not None:
+                    oi_first = first_options["OI"].sum()
+                    oi_last = snapshot["OI"].sum()
+                    feats["oi_change"] = float(oi_last - oi_first)
+                else:
+                    feats["oi_change"] = 0.0
+            else:
+                feats["iv_percentile"] = 50.0
+                feats["iv_skew"] = 0.0
+                feats["put_call_ratio"] = 1.0
+                feats["oi_change"] = 0.0
+
+            features_by_time[ts_str] = feats
+
+        return features_by_time
+
     # ----------------------------------------------------------------
     # Individual feature computations
     # ----------------------------------------------------------------

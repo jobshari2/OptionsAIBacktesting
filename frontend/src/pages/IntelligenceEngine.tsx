@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { intelligenceApi, dataApi } from '../api/client';
 import {
     LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-    ResponsiveContainer, BarChart, Bar, Cell, PieChart, Pie, Legend,
+    ResponsiveContainer, BarChart, Bar, Cell, PieChart, Pie,
 } from 'recharts';
 
 const REGIME_COLORS: Record<string, string> = {
@@ -350,7 +350,7 @@ export default function IntelligenceEngine() {
                                                 tickFormatter={(v: number) => `₹${(v / 100000).toFixed(0)}L`} />
                                             <Tooltip
                                                 contentStyle={{ background: '#1a2235', border: '1px solid #1e3a5f', borderRadius: 8, fontSize: 12 }}
-                                                formatter={(v: number) => [`₹${v.toLocaleString()}`, 'Equity']} />
+                                                formatter={(v: any) => [`₹${Number(v).toLocaleString()}`, 'Equity']} />
                                             <Line type="monotone" dataKey="equity" stroke="#3b82f6" strokeWidth={2} dot={false} />
                                         </LineChart>
                                     </ResponsiveContainer>
@@ -366,7 +366,7 @@ export default function IntelligenceEngine() {
                                             <YAxis type="category" dataKey="name" stroke="#4a5c78" fontSize={11} width={120} />
                                             <Tooltip
                                                 contentStyle={{ background: '#1a2235', border: '1px solid #1e3a5f', borderRadius: 8, fontSize: 12 }}
-                                                formatter={(v: number) => [`₹${v.toLocaleString()}`, 'PnL']} />
+                                                formatter={(v: any) => [`₹${Number(v).toLocaleString()}`, 'PnL']} />
                                             <Bar dataKey="pnl" radius={[0, 4, 4, 0]}>
                                                 {strategyBreakdownData.map((entry, i) => (
                                                     <Cell key={i} fill={entry.pnl >= 0 ? '#10b981' : '#ef4444'} />
@@ -384,7 +384,7 @@ export default function IntelligenceEngine() {
                                     <ResponsiveContainer width="100%" height={280}>
                                         <PieChart>
                                             <Pie data={regimeBreakdownData} dataKey="expiries" nameKey="name"
-                                                cx="50%" cy="50%" outerRadius={100} label={({ name, expiries }) => `${name} (${expiries})`}>
+                                                cx="50%" cy="50%" outerRadius={100} label={({ name, expiries }: any) => `${name} (${expiries})`}>
                                                 {regimeBreakdownData.map((entry, i) => (
                                                     <Cell key={i} fill={entry.color} />
                                                 ))}

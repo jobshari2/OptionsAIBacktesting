@@ -130,3 +130,35 @@ export const intelligenceApi = {
     getModelStatus: () =>
         fetchJSON('/api/intelligence/model-status'),
 };
+
+// --- Adaptive Engine APIs ---
+export const adaptiveApi = {
+    info: () => fetchJSON('/api/adaptive/'),
+    listExpiries: (startDate?: string, endDate?: string) => {
+        const params = new URLSearchParams();
+        if (startDate) params.set('start_date', formatToApiDate(startDate) || '');
+        if (endDate) params.set('end_date', formatToApiDate(endDate) || '');
+        const qs = params.toString();
+        return fetchJSON(`/api/adaptive/expiries${qs ? '?' + qs : ''}`);
+    },
+    run: (data: any) => {
+        const payload = { ...data };
+        if (payload.start_date) payload.start_date = formatToApiDate(payload.start_date);
+        if (payload.end_date) payload.end_date = formatToApiDate(payload.end_date);
+        return fetchJSON('/api/adaptive/run', { method: 'POST', body: JSON.stringify(payload) });
+    },
+    stop: (runId: string) =>
+        fetchJSON(`/api/adaptive/stop/${runId}`, { method: 'POST' }),
+    getStatus: (runId: string) =>
+        fetchJSON(`/api/adaptive/status/${runId}`),
+    getResult: (runId: string) =>
+        fetchJSON(`/api/adaptive/result/${runId}`),
+    getRiskDashboard: (runId: string) =>
+        fetchJSON(`/api/adaptive/risk-dashboard/${runId}`),
+    getAdjustments: (runId: string) =>
+        fetchJSON(`/api/adaptive/adjustments/${runId}`),
+    getGreeksTimeline: (runId: string) =>
+        fetchJSON(`/api/adaptive/greeks-timeline/${runId}`),
+    getPositionSnapshot: (runId: string, expiry: string) =>
+        fetchJSON(`/api/adaptive/position-snapshot/${runId}/${expiry}`),
+};

@@ -26,6 +26,9 @@ from .feature_engine import FeatureEngine
 from .regime_detector import RegimeDetector, MarketRegime
 from .strategy_selector import StrategySelector
 from .experience_memory import ExperienceMemory
+from .adjustment_engine import AdjustmentEngine, Adjustment
+from .risk_manager import RiskManager
+from .position_monitor import PositionMonitor
 
 
 @dataclass
@@ -51,6 +54,8 @@ class ExpiryIntelligenceResult:
     initial_strategy: str
     total_pnl: float = 0.0
     num_switches: int = 0
+    status: str = "success"
+    features_timeline: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -71,6 +76,13 @@ class IntelligentBacktestResult:
     regime_breakdown: dict
     execution_time_ms: float
     model_training_summary: Optional[dict] = None
+    # Adaptive engine fields
+    adjustment_history: list[dict] = field(default_factory=list)
+    greeks_timeline: list[dict] = field(default_factory=list)
+    risk_events: list[dict] = field(default_factory=list)
+    risk_summary: dict = field(default_factory=dict)
+    greeks_summary: dict = field(default_factory=dict)
+    total_adjustments: int = 0
 
     def to_dict(self) -> dict:
         """Serialize to dict."""
@@ -89,6 +101,12 @@ class IntelligentBacktestResult:
             "regime_timeline": self.regime_timeline,
             "strategy_breakdown": self.strategy_breakdown,
             "regime_breakdown": self.regime_breakdown,
+            "adjustment_history": self.adjustment_history,
+            "greeks_timeline": self.greeks_timeline,
+            "risk_events": self.risk_events,
+            "risk_summary": self.risk_summary,
+            "greeks_summary": self.greeks_summary,
+            "total_adjustments": self.total_adjustments,
             "trades": [
                 {
                     "trade_id": t.trade_id,
@@ -100,6 +118,7 @@ class IntelligentBacktestResult:
                     "exit_reason": t.exit_reason,
                     "spot_at_entry": t.spot_at_entry,
                     "spot_at_exit": t.spot_at_exit,
+                    "legs": t.legs,
                 }
                 for t in self.trades
             ],
@@ -147,8 +166,14 @@ class MetaController:
         self.experience_memory = ExperienceMemory()
         self.simulator = TradeSimulator()
 
+        # Adaptive engine components
+        self.adjustment_engine = AdjustmentEngine()
+        self.risk_manager = RiskManager()
+        self.position_monitor = PositionMonitor()
+
         # State
         self.progress: dict[str, dict] = {}
+        self._adaptive_results: dict[str, IntelligentBacktestResult] = {}
 
         # Try to load existing ML model
         model_path = get_ai_learning_dir() / "regime_model.pkl"
@@ -258,6 +283,7 @@ class MetaController:
                     "initial_strategy": result.initial_strategy,
                     "switches": result.num_switches,
                     "status": "success",
+                    "features_timeline": result.features_timeline,
                 })
 
                 # Record regime transitions
@@ -377,13 +403,15 @@ class MetaController:
 
         available_strikes = options_df.select("Strike").unique().to_series().sort().to_list()
 
+        # Precompute features for the whole day to eliminate O(N^2) recalculations
+        features_timeline = self.feature_engine.precompute_expiry_features(index_df, options_df)
+
         # --- Initial regime detection ---
         # Use first 15 minutes of data to detect initial regime
         initial_data_end_idx = min(15, len(timestamps))
-        initial_index = index_df.filter(pl.col("Date") <= timestamps[initial_data_end_idx - 1])
-        initial_options = options_df.filter(pl.col("Date") <= timestamps[initial_data_end_idx - 1])
-
-        features = self.feature_engine.compute_features(initial_index, initial_options)
+        initial_ts_str = str(timestamps[initial_data_end_idx - 1])
+        features = features_timeline.get(initial_ts_str, self.feature_engine._empty_features())
+        
         current_regime, regime_confidence = self.regime_detector.detect(features)
         current_strategy = self.strategy_selector.select(current_regime)
 
@@ -424,10 +452,8 @@ class MetaController:
             if bars_since_last_check >= check_interval:
                 bars_since_last_check = 0
 
-                # Compute features up to current time
-                index_up_to = index_df.filter(pl.col("Date") <= ts)
-                options_up_to = options_df.filter(pl.col("Date") <= ts)
-                new_features = self.feature_engine.compute_features(index_up_to, options_up_to)
+                # O(1) feature lookup instead of O(N) filtering
+                new_features = features_timeline.get(ts_str, self.feature_engine._empty_features())
                 new_regime, new_confidence = self.regime_detector.detect(new_features)
 
                 # --- MID-EXPIRY SWITCH ---
@@ -544,20 +570,6 @@ class MetaController:
                     current_strategy.exit.exit_time,
                 ):
                     exit_reason = "time_exit"
-                elif position_mgr.check_stop_loss(
-                    stop_loss_pct=current_strategy.exit.stop_loss_pct,
-                    stop_loss_points=current_strategy.exit.stop_loss_points,
-                    stop_loss_multiplier=current_strategy.exit.stop_loss_multiplier,
-                    initial_credit=initial_credit,
-                    per_leg=current_strategy.exit.per_leg_sl,
-                ):
-                    exit_reason = "stop_loss"
-                elif position_mgr.check_target_profit(
-                    target_pct=current_strategy.exit.target_profit_pct,
-                    target_points=current_strategy.exit.target_profit_points,
-                    initial_credit=initial_credit,
-                ):
-                    exit_reason = "target_profit"
 
                 if exit_reason:
                     exit_legs = [
@@ -609,6 +621,7 @@ class MetaController:
             initial_strategy=current_strategy.name,
             total_pnl=total_pnl,
             num_switches=len(regime_transitions),
+            features_timeline=features_timeline,
         )
 
     def _record_to_memory(self, result: ExpiryIntelligenceResult) -> None:
@@ -718,3 +731,245 @@ class MetaController:
         self.regime_detector.save_model(model_path)
 
         return summary
+
+    def run_adaptive_backtest(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        initial_capital: float = 1000000.0,
+        regime_check_interval: Optional[int] = None,
+        min_confidence: Optional[float] = None,
+        max_delta: float = 500.0,
+        enable_adjustments: bool = True,
+        run_id: Optional[str] = None,
+        selected_expiries: Optional[list[str]] = None,
+        stop_flag: Optional[dict] = None,
+    ) -> IntelligentBacktestResult:
+        """
+        Run an adaptive backtest with full adjustment engine, risk management,
+        and position monitoring integration.
+
+        Enhanced over run_intelligent_backtest with:
+            - Strategy adjustments (condor breakout, trend reversal, etc.)
+            - Risk limit enforcement (delta bounds, max loss, drawdown)
+            - Greeks timeline tracking for analytics
+            - Selected expiries filtering
+            - Stop flag for early termination
+        """
+        # Reset adaptive components
+        self.adjustment_engine.clear_history()
+        self.risk_manager.clear_events()
+        self.risk_manager.max_portfolio_delta = max_delta
+        self.position_monitor.clear()
+
+        # If selected_expiries provided, filter the expiry discovery
+        if selected_expiries and len(selected_expiries) > 0:
+            logger.info(f"MetaController: filtering to {len(selected_expiries)} selected expiries")
+            # Override the start/end dates — use the selected expiries directly
+            all_expiries = self.expiry_discovery.discover_all()
+            expiry_folders = set(selected_expiries)
+            filtered = [e for e in all_expiries if e["folder_name"] in expiry_folders]
+
+            if not filtered:
+                raise ValueError("None of the selected expiries were found in data")
+
+            # Temporarily patch filter_by_date_range to return our subset
+            original_filter = self.expiry_discovery.filter_by_date_range
+
+            def _patched_filter(sd=None, ed=None):
+                return filtered
+
+            self.expiry_discovery.filter_by_date_range = _patched_filter
+            try:
+                result = self.run_intelligent_backtest(
+                    start_date=start_date,
+                    end_date=end_date,
+                    initial_capital=initial_capital,
+                    regime_check_interval=regime_check_interval,
+                    min_confidence=min_confidence,
+                    run_id=run_id,
+                )
+            finally:
+                self.expiry_discovery.filter_by_date_range = original_filter
+        else:
+            # Run the base intelligent backtest normally
+            result = self.run_intelligent_backtest(
+                start_date=start_date,
+                end_date=end_date,
+                initial_capital=initial_capital,
+                regime_check_interval=regime_check_interval,
+                min_confidence=min_confidence,
+                run_id=run_id,
+            )
+
+        # --- Adaptive post-processing pass ---
+        # Replay through expiries evaluating adjustments and risk
+        current_equity = initial_capital
+        greeks_timeline: list[dict] = []
+
+        for er in result.expiry_results:
+            # Check stop flag
+            if stop_flag and run_id and stop_flag.get(run_id):
+                logger.info(f"MetaController: adaptive backtest stopped by user at expiry {er.get('expiry', '')}")
+                break
+
+            if er["status"] != "success":
+                continue
+
+            folder = er.get("folder", "")
+            try:
+                options_df = self.data_loader.load_options(folder)
+                index_df = self.data_loader.load_index(folder)
+                if len(index_df) == 0:
+                    continue
+
+                import polars as pl
+
+                if index_df.schema.get("Date") == pl.Utf8:
+                    index_df = index_df.with_columns(pl.col("Date").str.to_datetime().alias("Date"))
+
+                timestamps = index_df.select("Date").unique().sort("Date").to_series().to_list()
+
+                # Sample every 5 minutes for Greeks computation
+                for j, ts in enumerate(timestamps):
+                    # Check stop flag inside inner loop too
+                    if stop_flag and run_id and stop_flag.get(run_id):
+                        break
+
+                    if j % 5 != 0:
+                        continue
+                    ts_time = ts.time() if hasattr(ts, "time") else None
+                    if ts_time is None:
+                        continue
+                    if ts_time < dt_time(9, 15) or ts_time > dt_time(15, 30):
+                        continue
+
+                    idx_at_ts = index_df.filter(pl.col("Date") == ts)
+                    if len(idx_at_ts) == 0:
+                        continue
+
+                    spot = idx_at_ts.select("Close").item()
+
+                    # O(1) feature lookup from the first pass
+                    features = er.get("features_timeline", {}).get(str(ts), self.feature_engine._empty_features())
+                    rv = max(features.get("realized_volatility", 0.20), 0.05)
+
+                    # Get trades that were active at this timestamp for greeks
+                    active_trades = [
+                        t for t in result.trades
+                        if t.expiry == er["expiry"]
+                        and t.entry_time <= str(ts) <= t.exit_time
+                    ]
+
+                    if active_trades:
+                        # Use trade legs to build pseudo positions for Greeks
+                        from backend.backtester.position_manager import LegPosition
+                        pseudo_positions = []
+                        for trade in active_trades:
+                            for leg in trade.legs:
+                                pseudo_positions.append(LegPosition(
+                                    strike=leg.get("strike", 0),
+                                    right=leg.get("right", "CE"),
+                                    direction=leg.get("direction", "buy"),
+                                    quantity=leg.get("quantity", 1),
+                                    lot_size=25,
+                                    entry_price=leg.get("entry_price", 0),
+                                    entry_time=trade.entry_time,
+                                ))
+
+                        if pseudo_positions:
+                            snapshot = self.position_monitor.tick(
+                                positions=pseudo_positions,
+                                spot_price=spot,
+                                timestamp=str(ts),
+                                strategy_name=er.get("initial_strategy", ""),
+                                regime=er.get("initial_regime", ""),
+                                time_to_expiry_years=max(1/365, 0.001),
+                                sigma=rv,
+                                force_snapshot=True,
+                            )
+                            if snapshot:
+                                greeks_timeline.append({
+                                    "timestamp": str(ts),
+                                    "expiry": er["expiry"],
+                                    "spot_price": spot,
+                                    "net_delta": snapshot.net_delta,
+                                    "net_gamma": snapshot.net_gamma,
+                                    "net_theta": snapshot.net_theta,
+                                    "net_vega": snapshot.net_vega,
+                                    "total_pnl": snapshot.total_pnl,
+                                    "strategy": snapshot.strategy_name,
+                                    "regime": snapshot.regime,
+                                })
+
+                            # Check adjustments
+                            if enable_adjustments:
+                                regime = er.get("initial_regime", "")
+                                adj = self.adjustment_engine.evaluate(
+                                    strategy_name=er.get("initial_strategy", ""),
+                                    positions=pseudo_positions,
+                                    spot_price=spot,
+                                    features=features,
+                                    regime=regime,
+                                    timestamp=str(ts),
+                                )
+                                if adj:
+                                    last_adj = self.adjustment_engine._adjustment_history[-1] if self.adjustment_engine._adjustment_history else None
+                                    is_duplicate = False
+                                    if last_adj and last_adj.adjustment_type == adj.adjustment_type and last_adj.from_strategy == adj.from_strategy:
+                                        # Parse timestamps
+                                        try:
+                                            from datetime import datetime
+                                            t1 = datetime.fromisoformat(last_adj.timestamp) if "T" in last_adj.timestamp else datetime.strptime(last_adj.timestamp, "%Y-%m-%d %H:%M:%S")
+                                            t2 = datetime.fromisoformat(adj.timestamp) if "T" in adj.timestamp else datetime.strptime(adj.timestamp, "%Y-%m-%d %H:%M:%S")
+                                            if (t2 - t1).total_seconds() < 3600:
+                                                is_duplicate = True
+                                        except Exception:
+                                            # Fallback string comparison for same day
+                                            if str(last_adj.timestamp)[:10] == str(adj.timestamp)[:10]:
+                                                is_duplicate = True
+
+                                    if not is_duplicate:
+                                        self.adjustment_engine.record_adjustment(adj)
+
+                            # Check risk limits
+                            risk_check = self.risk_manager.check_risk_limits(
+                                positions=pseudo_positions,
+                                spot_price=spot,
+                                strategy_name=er.get("initial_strategy", ""),
+                                capital=initial_capital,
+                                current_equity=current_equity,
+                                timestamp=str(ts),
+                                time_to_expiry_years=max(1/365, 0.001),
+                                sigma=rv,
+                            )
+
+            except Exception as e:
+                logger.warning(f"Adaptive pass error for {folder}: {e}")
+                continue
+
+            current_equity += er.get("pnl", 0)
+
+        # Enrich the result with adaptive data
+        result.adjustment_history = self.adjustment_engine.get_history()
+        result.greeks_timeline = greeks_timeline
+        result.risk_events = self.risk_manager.get_risk_events()
+        result.risk_summary = self.risk_manager.get_risk_summary()
+        result.greeks_summary = self.position_monitor.get_greeks_summary()
+        result.total_adjustments = self.adjustment_engine.total_adjustments
+
+        # Store result for API retrieval
+        self._adaptive_results[result.run_id] = result
+
+        logger.info(
+            f"MetaController: adaptive backtest complete — "
+            f"{result.total_adjustments} adjustments, "
+            f"{len(result.risk_events)} risk events, "
+            f"{len(greeks_timeline)} greeks snapshots"
+        )
+
+        return result
+
+    def get_adaptive_result(self, run_id: str) -> Optional[IntelligentBacktestResult]:
+        """Get a stored adaptive backtest result."""
+        return self._adaptive_results.get(run_id)

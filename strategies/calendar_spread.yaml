@@ -1,0 +1,27 @@
+name: calendar_spread
+description: "Calendar Spread - Exploit theta differential between near and far expiry options"
+lot_size: 25
+max_positions: 1
+tags: [neutral, theta, time-spread, limited-risk]
+
+legs:
+  - direction: sell
+    right: CE
+    strike_offset: 0
+    quantity: 1
+    label: "Sell ATM CE (near expiry)"
+  - direction: buy
+    right: CE
+    strike_offset: 0
+    quantity: 1
+    label: "Buy ATM CE (far expiry)"
+
+entry:
+  entry_time: "09:20"
+  iv_percentile_min: 30
+
+exit:
+  exit_time: "15:15"
+  stop_loss_pct: 80
+  target_profit_pct: 40
+  per_leg_sl: false
