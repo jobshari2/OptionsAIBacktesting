@@ -12,12 +12,14 @@ async function fetchJSON(url: string, options?: RequestInit) {
     return res.json();
 }
 
+import { formatToApiDate } from '../utils/date';
+
 // --- Data APIs ---
 export const dataApi = {
     getExpiries: (startDate?: string, endDate?: string) => {
         const params = new URLSearchParams();
-        if (startDate) params.set('start_date', startDate);
-        if (endDate) params.set('end_date', endDate);
+        if (startDate) params.set('start_date', formatToApiDate(startDate) || '');
+        if (endDate) params.set('end_date', formatToApiDate(endDate) || '');
         return fetchJSON(`/api/data/expiries?${params}`);
     },
     getOptionChain: (expiry: string, timestamp?: string) => {
@@ -48,8 +50,12 @@ export const strategyApi = {
 
 // --- Backtest APIs ---
 export const backtestApi = {
-    run: (data: any) =>
-        fetchJSON('/api/backtest/run', { method: 'POST', body: JSON.stringify(data) }),
+    run: (data: any) => {
+        const payload = { ...data };
+        if (payload.start_date) payload.start_date = formatToApiDate(payload.start_date);
+        if (payload.end_date) payload.end_date = formatToApiDate(payload.end_date);
+        return fetchJSON('/api/backtest/run', { method: 'POST', body: JSON.stringify(payload) });
+    },
     getStatus: (runId: string) => fetchJSON(`/api/backtest/status/${runId}`),
     stop: (runId: string) => fetchJSON(`/api/backtest/stop/${runId}`, { method: 'POST' }),
     listResults: () => fetchJSON('/api/backtest/results'),
@@ -74,8 +80,12 @@ export const analyticsApi = {
 
 // --- AI APIs ---
 export const aiApi = {
-    optimize: (data: any) =>
-        fetchJSON('/api/ai/optimize', { method: 'POST', body: JSON.stringify(data) }),
+    optimize: (data: any) => {
+        const payload = { ...data };
+        if (payload.start_date) payload.start_date = formatToApiDate(payload.start_date);
+        if (payload.end_date) payload.end_date = formatToApiDate(payload.end_date);
+        return fetchJSON('/api/ai/optimize', { method: 'POST', body: JSON.stringify(payload) });
+    },
     getLearningHistory: (strategyName?: string) => {
         const params = strategyName ? `?strategy_name=${strategyName}` : '';
         return fetchJSON(`/api/ai/learning-history${params}`);

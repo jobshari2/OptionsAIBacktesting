@@ -10,6 +10,7 @@ from backend.strategy_engine import Strategy, StrategyLoader
 from backend.analytics.metrics import MetricsCalculator
 from backend.analytics.payoff import PayoffCalculator
 from backend.storage.database import get_database
+from backend.logger import logger
 
 router = APIRouter(prefix="/api/backtest", tags=["Backtest"])
 
@@ -36,6 +37,7 @@ class AnimationRequest(BaseModel):
 
 def _run_backtest_task(strategy: Strategy, request: BacktestRequest, run_id: str):
     """Background task to run backtest and save results."""
+    logger.info(f"Starting background backtest task for strategy '{strategy.name}' with run_id {run_id}")
     try:
         # Run backtest
         result = backtest_engine.run_backtest(
@@ -60,8 +62,9 @@ def _run_backtest_task(strategy: Strategy, request: BacktestRequest, run_id: str
         result_data["final_capital"] = request.initial_capital + result.total_pnl
         db.save_backtest_run(result_data)
         db.save_trades(result.run_id, result_data["trades"])
+        logger.info(f"Background backtest task {run_id} completed successfully")
     except Exception as e:
-        print(f"Error in backtest task {run_id}: {e}")
+        logger.error(f"Error in backtest task {run_id}: {e}")
         if run_id in backtest_engine.progress:
             backtest_engine.progress[run_id]["status"] = "error"
             backtest_engine.progress[run_id]["error"] = str(e)
@@ -70,6 +73,7 @@ def _run_backtest_task(strategy: Strategy, request: BacktestRequest, run_id: str
 @router.post("/run")
 async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTasks):
     """Run a backtest with a strategy asynchronously."""
+    logger.info("Received request to run backtest")
     try:
         # Load or create strategy
         if request.strategy_config:
@@ -99,10 +103,13 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
         return {"run_id": run_id, "status": "running"}
 
     except FileNotFoundError as e:
+        logger.warning(f"File not found during backtest run request: {e}")
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
+        logger.warning(f"Validation error during backtest run request: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        logger.error(f"Error initiating backtest run: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -133,15 +140,19 @@ async def get_status(run_id: str):
 @router.post("/stop/{run_id}")
 async def stop_backtest(run_id: str):
     """Stop a running backtest."""
+    logger.info(f"Stopping backtest run {run_id}")
     success = backtest_engine.stop_backtest(run_id)
     if success:
+        logger.info(f"Successfully stopped backtest run {run_id}")
         return {"status": "success", "message": f"Stop requested for run {run_id}"}
+    logger.warning(f"Failed to stop backtest run {run_id}")
     raise HTTPException(status_code=400, detail=f"Could not stop run '{run_id}'. It may not exist or is not currently running.")
 
 
 @router.get("/results")
 async def list_results():
     """List all backtest results."""
+    logger.info("Listing all backtest results")
     try:
         db = get_database()
         runs = db.get_backtest_runs()
@@ -154,6 +165,7 @@ async def list_results():
 @router.get("/results/{run_id}")
 async def get_result(run_id: str):
     """Get a specific backtest result."""
+    logger.info(f"Fetching result for backtest run {run_id}")
     try:
         # Try database first
         db = get_database()
@@ -178,6 +190,7 @@ async def get_result(run_id: str):
 @router.get("/trades/{run_id}")
 async def get_trades(run_id: str):
     """Get trade log for a backtest run."""
+    logger.info(f"Fetching trades for backtest run {run_id}")
     try:
         db = get_database()
         trades = db.get_trades_for_run(run_id)
@@ -214,6 +227,7 @@ async def get_trades(run_id: str):
 @router.post("/animation")
 async def get_animation_data(request: AnimationRequest):
     """Get minute-by-minute animation data for strategy replay."""
+    logger.info(f"Fetching animation data for strategy {request.strategy_name or 'config'} on expiry {request.expiry_folder}")
     try:
         if request.strategy_config:
             strategy = Strategy.from_dict(request.strategy_config)

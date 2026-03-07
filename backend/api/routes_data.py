@@ -6,6 +6,7 @@ from typing import Optional
 
 from backend.data_engine import DataLoader, ExpiryDiscovery, DataJoiner
 from backend.analytics.greeks import GreeksCalculator
+from backend.logger import logger
 
 router = APIRouter(prefix="/api/data", tags=["Data"])
 
@@ -16,10 +17,11 @@ expiry_discovery = ExpiryDiscovery()
 
 @router.get("/expiries")
 async def list_expiries(
-    start_date: Optional[str] = Query(None, description="Start date YYYY-MM-DD"),
-    end_date: Optional[str] = Query(None, description="End date YYYY-MM-DD"),
+    start_date: Optional[str] = Query(None, description="Start date DD/MM/YYYY"),
+    end_date: Optional[str] = Query(None, description="End date DD/MM/YYYY"),
 ):
     """List all available expiry dates."""
+    logger.info(f"Fetching expiries (start: {start_date}, end: {end_date})")
     try:
         if start_date or end_date:
             expiries = expiry_discovery.filter_by_date_range(start_date, end_date)
@@ -45,6 +47,7 @@ async def get_option_chain(
     strike_max: Optional[int] = Query(None),
 ):
     """Get historical option chain data for an expiry."""
+    logger.info(f"Fetching option chain for expiry={expiry}, timestamp={timestamp}")
     try:
         df = data_loader.load_options(expiry)
 
@@ -77,7 +80,9 @@ async def get_option_chain(
 
         # Convert datetime objects to strings
         for r in records:
-            if "Date" in r and hasattr(r["Date"], "isoformat"):
+            if "Date" in r and hasattr(r["Date"], "strftime"):
+                r["Date"] = r["Date"].strftime("%d/%m/%Y %H:%M:%S")
+            elif "Date" in r and hasattr(r["Date"], "isoformat"):
                 r["Date"] = r["Date"].isoformat()
 
         return {
@@ -87,8 +92,10 @@ async def get_option_chain(
             "data": records,
         }
     except FileNotFoundError:
+        logger.warning(f"Expiry '{expiry}' not found for option chain")
         raise HTTPException(status_code=404, detail=f"Expiry '{expiry}' not found")
     except Exception as e:
+        logger.error(f"Error fetching option chain: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -99,12 +106,15 @@ async def get_index_data(
     end_time: Optional[str] = Query(None, description="End time HH:MM"),
 ):
     """Get index (spot) data for an expiry."""
+    logger.info(f"Fetching index data for expiry={expiry}, start={start_time}, end={end_time}")
     try:
         df = data_loader.load_index(expiry, start_time=start_time, end_time=end_time)
         records = df.to_dicts()
 
         for r in records:
-            if "Date" in r and hasattr(r["Date"], "isoformat"):
+            if "Date" in r and hasattr(r["Date"], "strftime"):
+                r["Date"] = r["Date"].strftime("%d/%m/%Y %H:%M:%S")
+            elif "Date" in r and hasattr(r["Date"], "isoformat"):
                 r["Date"] = r["Date"].isoformat()
 
         return {
@@ -113,8 +123,10 @@ async def get_index_data(
             "data": records,
         }
     except FileNotFoundError:
+        logger.warning(f"Expiry '{expiry}' not found for index data")
         raise HTTPException(status_code=404, detail=f"Expiry '{expiry}' not found")
     except Exception as e:
+        logger.error(f"Error fetching index data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -125,12 +137,15 @@ async def get_futures_data(
     end_time: Optional[str] = Query(None),
 ):
     """Get futures data for an expiry."""
+    logger.info(f"Fetching futures data for expiry={expiry}, start={start_time}, end={end_time}")
     try:
         df = data_loader.load_futures(expiry, start_time=start_time, end_time=end_time)
         records = df.to_dicts()
 
         for r in records:
-            if "Date" in r and hasattr(r["Date"], "isoformat"):
+            if "Date" in r and hasattr(r["Date"], "strftime"):
+                r["Date"] = r["Date"].strftime("%d/%m/%Y %H:%M:%S")
+            elif "Date" in r and hasattr(r["Date"], "isoformat"):
                 r["Date"] = r["Date"].isoformat()
 
         return {
@@ -139,8 +154,10 @@ async def get_futures_data(
             "data": records,
         }
     except FileNotFoundError:
+        logger.warning(f"Expiry '{expiry}' not found for futures data")
         raise HTTPException(status_code=404, detail=f"Expiry '{expiry}' not found")
     except Exception as e:
+        logger.error(f"Error fetching futures data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

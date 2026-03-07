@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from backend.strategy_engine import Strategy, StrategyLoader
+from backend.logger import logger
 
 router = APIRouter(prefix="/api/strategies", tags=["Strategies"])
 
@@ -27,6 +28,7 @@ class StrategyCreate(BaseModel):
 @router.get("/")
 async def list_strategies():
     """List all available strategies."""
+    logger.info("Listing all strategies")
     return {"strategies": strategy_loader.list_strategies()}
 
 
@@ -89,49 +91,61 @@ async def get_templates():
 @router.get("/{name}")
 async def get_strategy(name: str):
     """Get a specific strategy by name."""
+    logger.info(f"Fetching strategy '{name}'")
     try:
         strategy = strategy_loader.load_strategy(name)
         return {"strategy": strategy.to_dict()}
     except FileNotFoundError:
+        logger.warning(f"Strategy '{name}' not found")
         raise HTTPException(status_code=404, detail=f"Strategy '{name}' not found")
     except Exception as e:
+        logger.error(f"Error fetching strategy '{name}': {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/")
 async def create_strategy(data: StrategyCreate):
     """Create or update a strategy."""
+    logger.info(f"Creating strategy '{data.name}'")
     try:
         strategy = Strategy.from_dict(data.model_dump())
         path = strategy_loader.save_strategy(strategy)
+        logger.info(f"Strategy '{strategy.name}' saved to {path}")
         return {
             "message": f"Strategy '{strategy.name}' saved",
             "path": str(path),
             "strategy": strategy.to_dict(),
         }
     except Exception as e:
+        logger.error(f"Error creating strategy: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put("/{name}")
 async def update_strategy(name: str, data: StrategyCreate):
     """Update an existing strategy."""
+    logger.info(f"Updating strategy '{name}'")
     try:
         data_dict = data.model_dump()
         data_dict["name"] = name
         strategy = Strategy.from_dict(data_dict)
         path = strategy_loader.save_strategy(strategy)
+        logger.info(f"Strategy '{name}' updated at {path}")
         return {
             "message": f"Strategy '{name}' updated",
             "strategy": strategy.to_dict(),
         }
     except Exception as e:
+        logger.error(f"Error updating strategy '{name}': {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/{name}")
 async def delete_strategy(name: str):
     """Delete a strategy."""
+    logger.info(f"Deleting strategy '{name}'")
     if strategy_loader.delete_strategy(name):
+        logger.info(f"Strategy '{name}' deleted successfully")
         return {"message": f"Strategy '{name}' deleted"}
+    logger.warning(f"Could not delete strategy '{name}' as it was not found")
     raise HTTPException(status_code=404, detail=f"Strategy '{name}' not found")

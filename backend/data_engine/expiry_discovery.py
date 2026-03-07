@@ -7,6 +7,7 @@ from pathlib import Path
 from functools import lru_cache
 
 from backend.config import config
+from backend.logger import logger
 
 
 class ExpiryDiscovery:
@@ -29,10 +30,12 @@ class ExpiryDiscovery:
             if entry.is_dir():
                 parsed = self._parse_expiry_name(entry.name)
                 if parsed:
+                    date_str = parsed.strftime("%d/%m/%Y")
+                    logger.debug(f"Discovered expiry {entry.name} ({date_str})")
                     expiries.append({
                         "folder_name": entry.name,
                         "date": parsed,
-                        "date_str": parsed.strftime("%Y-%m-%d"),
+                        "date_str": date_str,
                         "path": str(entry.path),
                     })
 
@@ -44,7 +47,7 @@ class ExpiryDiscovery:
         return [e["folder_name"] for e in self.discover_all()]
 
     def get_expiry_dates(self) -> list[str]:
-        """Get sorted list of expiry dates as YYYY-MM-DD strings."""
+        """Get sorted list of expiry dates as DD/MM/YYYY strings."""
         return [e["date_str"] for e in self.discover_all()]
 
     def get_expiry_path(self, folder_name: str) -> Path | None:
@@ -58,24 +61,25 @@ class ExpiryDiscovery:
         end_date: str | None = None,
     ) -> list[dict]:
         """
-        Filter expiries by date range (YYYY-MM-DD format).
+        Filter expiries by date range (DD/MM/YYYY format).
         """
+        logger.info(f"Filtering expiries between {start_date} and {end_date}")
         all_expiries = self.discover_all()
         result = all_expiries
 
         if start_date:
-            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            start_dt = datetime.strptime(start_date, "%d/%m/%Y")
             result = [e for e in result if e["date"] >= start_dt]
 
         if end_date:
-            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+            end_dt = datetime.strptime(end_date, "%d/%m/%Y")
             result = [e for e in result if e["date"] <= end_dt]
 
         return result
 
     def get_nearest_expiry(self, target_date: str) -> dict | None:
         """Find the nearest expiry to a given date."""
-        target = datetime.strptime(target_date, "%Y-%m-%d")
+        target = datetime.strptime(target_date, "%d/%m/%Y")
         all_expiries = self.discover_all()
         if not all_expiries:
             return None

@@ -8,6 +8,7 @@ from typing import Optional
 from backend.ai_optimizer import AIOptimizer, LearningMemory
 from backend.ai_optimizer.optimizer import ParameterSpace
 from backend.strategy_engine import Strategy, StrategyLoader
+from backend.logger import logger
 
 router = APIRouter(prefix="/api/ai", tags=["AI Optimizer"])
 
@@ -31,6 +32,7 @@ class OptimizeRequest(BaseModel):
 @router.post("/optimize")
 async def run_optimization(request: OptimizeRequest):
     """Run AI optimization on a strategy."""
+    logger.info(f"Received request to run AI optimization for strategy {request.strategy_name or 'custom backend'}")
     try:
         if request.strategy_config:
             strategy = Strategy.from_dict(request.strategy_config)
@@ -79,8 +81,10 @@ async def run_optimization(request: OptimizeRequest):
         }
 
     except FileNotFoundError as e:
+        logger.warning(f"File not found during optimization request: {e}")
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        logger.error(f"Error running optimization: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -90,6 +94,7 @@ async def get_learning_history(
     limit: int = 100,
 ):
     """Get AI learning history."""
+    logger.info(f"Fetching learning history for strategy: {strategy_name}")
     return {
         "history": learning_memory.get_learning_history(strategy_name, limit),
     }
@@ -98,6 +103,7 @@ async def get_learning_history(
 @router.get("/parameter-changes")
 async def get_parameter_changes(strategy_name: Optional[str] = None):
     """Get parameter change history."""
+    logger.info(f"Fetching parameter change history for strategy: {strategy_name}")
     return {
         "changes": learning_memory.get_parameter_changes(strategy_name),
     }
@@ -106,6 +112,7 @@ async def get_parameter_changes(strategy_name: Optional[str] = None):
 @router.get("/strategy-evolution")
 async def get_strategy_evolution(strategy_name: Optional[str] = None):
     """Get strategy evolution history."""
+    logger.info(f"Fetching strategy evolution history for strategy: {strategy_name}")
     return {
         "evolution": learning_memory.get_strategy_evolution(strategy_name),
     }
@@ -114,4 +121,5 @@ async def get_strategy_evolution(strategy_name: Optional[str] = None):
 @router.get("/suggestions/{strategy_name}")
 async def get_suggestions(strategy_name: str):
     """Get AI-suggested improvements for a strategy."""
+    logger.info(f"Fetching AI suggestions for strategy: {strategy_name}")
     return learning_memory.get_suggestions(strategy_name)

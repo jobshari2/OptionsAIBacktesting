@@ -1,8 +1,11 @@
 """
 FastAPI application entry point — Nifty Options Backtesting Platform.
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+import time
+
+from backend.logger import logger
 
 from backend.api.routes_data import router as data_router
 from backend.api.routes_strategy import router as strategy_router
@@ -36,6 +39,16 @@ app.include_router(analytics_router)
 app.include_router(ai_router)
 
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+    logger.info(f"Incoming request: {request.method} {request.url.path}")
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    logger.info(f"Completed request: {request.method} {request.url.path} with status {response.status_code} in {process_time:.4f}s")
+    return response
+
+
 @app.get("/")
 async def root():
     """Health check and API info."""
@@ -57,6 +70,7 @@ async def root():
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint."""
+    logger.info("Health check endpoint called")
     return {"status": "healthy"}
 
 

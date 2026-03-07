@@ -10,6 +10,7 @@ from backend.analytics.payoff import PayoffCalculator
 from backend.analytics.greeks import GreeksCalculator
 from backend.backtester.engine import BacktestEngine
 from backend.storage.database import get_database
+from backend.logger import logger
 
 router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
 
@@ -22,6 +23,7 @@ backtest_engine = BacktestEngine()
 @router.get("/metrics/{run_id}")
 async def get_metrics(run_id: str):
     """Get performance metrics for a backtest run."""
+    logger.info(f"Fetching metrics for run_id {run_id}")
     try:
         # Get trades from DB or in-memory
         db = get_database()
@@ -39,6 +41,7 @@ async def get_metrics(run_id: str):
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Error calculating metrics for {run_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -52,6 +55,7 @@ class PayoffRequest(BaseModel):
 @router.post("/payoff")
 async def calculate_payoff(request: PayoffRequest):
     """Calculate payoff diagram for a strategy."""
+    logger.info(f"Calculating payoff diagram for {len(request.legs)} legs")
     try:
         result = payoff_calc.calculate_strategy_payoff(
             legs=request.legs,
@@ -61,6 +65,7 @@ async def calculate_payoff(request: PayoffRequest):
         )
         return result
     except Exception as e:
+        logger.error(f"Error calculating payoff: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -76,6 +81,7 @@ class GreeksRequest(BaseModel):
 @router.post("/greeks")
 async def calculate_greeks(request: GreeksRequest):
     """Calculate option Greeks."""
+    logger.info("Calculating option Greeks")
     try:
         greeks = greeks_calc.all_greeks(
             S=request.spot_price,
@@ -87,6 +93,7 @@ async def calculate_greeks(request: GreeksRequest):
         )
         return {"greeks": greeks}
     except Exception as e:
+        logger.error(f"Error calculating Greeks: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -102,6 +109,7 @@ class IVRequest(BaseModel):
 @router.post("/implied-volatility")
 async def calculate_iv(request: IVRequest):
     """Calculate implied volatility."""
+    logger.info("Calculating implied volatility")
     try:
         iv = greeks_calc.implied_volatility(
             market_price=request.market_price,
@@ -113,6 +121,7 @@ async def calculate_iv(request: IVRequest):
         )
         return {"implied_volatility": iv, "iv_pct": iv * 100}
     except Exception as e:
+        logger.error(f"Error calculating implied volatility: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -121,6 +130,7 @@ async def compare_runs(
     run_ids: str = Query(..., description="Comma-separated run IDs"),
 ):
     """Compare multiple backtest runs."""
+    logger.info(f"Comparing backtest runs: {run_ids}")
     try:
         ids = [r.strip() for r in run_ids.split(",")]
         comparisons = []
@@ -149,4 +159,5 @@ async def compare_runs(
 
         return {"comparisons": comparisons}
     except Exception as e:
+        logger.error(f"Error comparing runs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
