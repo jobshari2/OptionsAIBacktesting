@@ -57,6 +57,8 @@ class EntryCondition:
     iv_percentile_max: Optional[float] = None  # Max IV percentile
     trend_filter: Optional[str] = None         # 'bullish', 'bearish', 'neutral'
     spot_range_pct: Optional[float] = None     # % range from previous close
+    ml_prediction_direction: Optional[str] = None # 'UP', 'DOWN'
+    ml_prediction_threshold: Optional[float] = None # minimum probability e.g. 0.65
     custom_conditions: list[str] = field(default_factory=list)
 
 
@@ -120,6 +122,8 @@ class Strategy:
                 "iv_percentile_max": self.entry.iv_percentile_max,
                 "trend_filter": self.entry.trend_filter,
                 "spot_range_pct": self.entry.spot_range_pct,
+                "ml_prediction_direction": self.entry.ml_prediction_direction,
+                "ml_prediction_threshold": self.entry.ml_prediction_threshold,
             },
             "exit": {
                 "exit_time": self.exit.exit_time,
@@ -154,6 +158,8 @@ class Strategy:
             iv_percentile_max=entry_data.get("iv_percentile_max"),
             trend_filter=entry_data.get("trend_filter"),
             spot_range_pct=entry_data.get("spot_range_pct"),
+            ml_prediction_direction=entry_data.get("ml_prediction_direction"),
+            ml_prediction_threshold=entry_data.get("ml_prediction_threshold"),
         )
 
         exit_data = data.get("exit", {})

@@ -14,6 +14,7 @@ from backend.api.routes_analytics import router as analytics_router
 from backend.api.routes_ai import router as ai_router
 from backend.api.routes_intelligence import router as intelligence_router
 from backend.api.routes_adaptive import router as adaptive_router
+from backend.api.routes_ml import router as ml_router
 from backend.config import config
 
 app = FastAPI(
@@ -41,7 +42,7 @@ app.include_router(analytics_router)
 app.include_router(ai_router)
 app.include_router(intelligence_router)
 app.include_router(adaptive_router)
-
+app.include_router(ml_router)
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -68,6 +69,7 @@ async def root():
             "analytics": "/api/analytics",
             "ai": "/api/ai",
             "intelligence": "/api/intelligence",
+            "ml": "/api/ml",
         },
     }
 

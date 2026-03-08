@@ -7,12 +7,31 @@ from typing import Optional
 from backend.data_engine import DataLoader, ExpiryDiscovery, DataJoiner
 from backend.analytics.greeks import GreeksCalculator
 from backend.logger import logger
+from backend.config import config
+from pydantic import BaseModel
+
+class ConfigUpdateRequest(BaseModel):
+    use_unified: bool
 
 router = APIRouter(prefix="/api/data", tags=["Data"])
 
 # Shared instances
 data_loader = DataLoader()
 expiry_discovery = ExpiryDiscovery()
+
+@router.get("/config")
+async def get_config():
+    """Get active data configuration."""
+    return {"use_unified": config.data.use_unified}
+
+@router.post("/config")
+async def update_config(req: ConfigUpdateRequest):
+    """Update active data configuration dynamically."""
+    config.data.use_unified = req.use_unified
+    logger.info(f"Updated global data config: use_unified={config.data.use_unified}")
+    data_loader.clear_cache()
+    expiry_discovery.clear_cache()
+    return {"message": "Config updated", "use_unified": config.data.use_unified}
 
 
 @router.get("/expiries")
@@ -45,22 +64,35 @@ async def get_option_chain(
     timestamp: Optional[str] = Query(None, description="Specific timestamp"),
     strike_min: Optional[int] = Query(None),
     strike_max: Optional[int] = Query(None),
+    use_unified: Optional[bool] = Query(None, description="Force use unified or individual files"),
 ):
     """Get historical option chain data for an expiry."""
-    logger.info(f"Fetching option chain for expiry={expiry}, timestamp={timestamp}")
+    import time
+    start_perf = time.perf_counter()
+    
+    logger.info(f"Fetching option chain for expiry={expiry}, timestamp={timestamp}, unified={use_unified}")
     try:
-        df = data_loader.load_options(expiry)
+        df = data_loader.load_options(expiry, use_unified=use_unified)
 
         if df.schema.get("Date") == __import__("polars").Utf8:
             df = df.with_columns(
                 __import__("polars").col("Date").str.to_datetime().alias("Date")
             )
 
+        # Get unique timestamps for reference BEFORE filtering
+        timestamps = df.select("Date").unique().sort("Date").to_series().to_list()
+
         # If specific timestamp, filter to that
         if timestamp:
             import polars as pl
-            target = pl.Series([timestamp]).str.to_datetime()[0]
-            df = df.filter(pl.col("Date") == target)
+            # The API assumes timestamp comes in as 'YYYY-MM-DD HH:MM:SS' or similar. 
+            # We parse into datetime.
+            # Using strict=False to handle potential time format variations
+            try:
+                target = pl.Series([timestamp]).str.to_datetime(strict=False)[0]
+                df = df.filter(pl.col("Date") == target)
+            except Exception as e:
+                logger.warning(f"Failed to parse timestamp {timestamp}: {e}")
 
         # Strike range filter
         import polars as pl
@@ -68,9 +100,6 @@ async def get_option_chain(
             df = df.filter(pl.col("Strike") >= strike_min)
         if strike_max:
             df = df.filter(pl.col("Strike") <= strike_max)
-
-        # Get unique timestamps for reference
-        timestamps = df.select("Date").unique().sort("Date").to_series().to_list()
 
         # If no specific timestamp, get the first one
         if not timestamp and len(timestamps) > 0:
@@ -85,11 +114,25 @@ async def get_option_chain(
             elif "Date" in r and hasattr(r["Date"], "isoformat"):
                 r["Date"] = r["Date"].isoformat()
 
+        str_timestamps = []
+        for t in timestamps:
+            if hasattr(t, "strftime"):
+                str_timestamps.append(t.strftime("%d/%m/%Y %H:%M:%S"))
+            elif hasattr(t, "isoformat"):
+                str_timestamps.append(t.isoformat())
+            else:
+                str_timestamps.append(str(t))
+
+        load_time_ms = round((time.perf_counter() - start_perf) * 1000, 2)
+        
         return {
             "expiry": expiry,
             "total_records": len(records),
             "available_timestamps": len(timestamps),
+            "timestamps": str_timestamps,
             "data": records,
+            "load_time_ms": load_time_ms,
+            "source_type": "unified" if use_unified or (use_unified is None and config.data.use_unified) else "individual"
         }
     except FileNotFoundError:
         logger.warning(f"Expiry '{expiry}' not found for option chain")
@@ -104,11 +147,15 @@ async def get_index_data(
     expiry: str = Query(..., description="Expiry folder name"),
     start_time: Optional[str] = Query(None, description="Start time HH:MM"),
     end_time: Optional[str] = Query(None, description="End time HH:MM"),
+    use_unified: Optional[bool] = Query(None),
 ):
     """Get index (spot) data for an expiry."""
-    logger.info(f"Fetching index data for expiry={expiry}, start={start_time}, end={end_time}")
+    import time
+    start_perf = time.perf_counter()
+    
+    logger.info(f"Fetching index data for expiry={expiry}, start={start_time}, end={end_time}, unified={use_unified}")
     try:
-        df = data_loader.load_index(expiry, start_time=start_time, end_time=end_time)
+        df = data_loader.load_index(expiry, start_time=start_time, end_time=end_time, use_unified=use_unified)
         records = df.to_dicts()
 
         for r in records:
@@ -117,10 +164,14 @@ async def get_index_data(
             elif "Date" in r and hasattr(r["Date"], "isoformat"):
                 r["Date"] = r["Date"].isoformat()
 
+        load_time_ms = round((time.perf_counter() - start_perf) * 1000, 2)
+        
         return {
             "expiry": expiry,
             "total_records": len(records),
             "data": records,
+            "load_time_ms": load_time_ms,
+            "source_type": "unified" if use_unified or (use_unified is None and config.data.use_unified) else "individual"
         }
     except FileNotFoundError:
         logger.warning(f"Expiry '{expiry}' not found for index data")
@@ -135,11 +186,15 @@ async def get_futures_data(
     expiry: str = Query(..., description="Expiry folder name"),
     start_time: Optional[str] = Query(None),
     end_time: Optional[str] = Query(None),
+    use_unified: Optional[bool] = Query(None),
 ):
     """Get futures data for an expiry."""
-    logger.info(f"Fetching futures data for expiry={expiry}, start={start_time}, end={end_time}")
+    import time
+    start_perf = time.perf_counter()
+    
+    logger.info(f"Fetching futures data for expiry={expiry}, start={start_time}, end={end_time}, unified={use_unified}")
     try:
-        df = data_loader.load_futures(expiry, start_time=start_time, end_time=end_time)
+        df = data_loader.load_futures(expiry, start_time=start_time, end_time=end_time, use_unified=use_unified)
         records = df.to_dicts()
 
         for r in records:
@@ -148,10 +203,14 @@ async def get_futures_data(
             elif "Date" in r and hasattr(r["Date"], "isoformat"):
                 r["Date"] = r["Date"].isoformat()
 
+        load_time_ms = round((time.perf_counter() - start_perf) * 1000, 2)
+        
         return {
             "expiry": expiry,
             "total_records": len(records),
             "data": records,
+            "load_time_ms": load_time_ms,
+            "source_type": "unified" if use_unified or (use_unified is None and config.data.use_unified) else "individual"
         }
     except FileNotFoundError:
         logger.warning(f"Expiry '{expiry}' not found for futures data")
@@ -159,6 +218,14 @@ async def get_futures_data(
     except Exception as e:
         logger.error(f"Error fetching futures data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/benchmark")
+async def run_benchmark(count: int = Query(5)):
+    """Run data loading benchmark."""
+    from utils.benchmark_loader import DataBenchmark
+    benchmark = DataBenchmark()
+    return benchmark.run_benchmark(count)
 
 
 @router.get("/cache-info")

@@ -406,6 +406,8 @@ class MetaController:
                 initial_regime="UNKNOWN", initial_strategy="none",
             )
 
+        expiry_dt = datetime.strptime(expiry_date, "%d/%m/%Y")
+
         available_strikes = options_df.select("Strike").unique().to_series().sort().to_list()
 
         # Precompute features for the whole day to eliminate O(N^2) recalculations
@@ -538,8 +540,12 @@ class MetaController:
             entry_time = dt_time(entry_h, entry_m)
             exit_time = dt_time(exit_h, exit_m)
 
+            # Calculate DTE (Days to Expiry)
+            # Both ts and expiry_dt are datetimes
+            dte = (expiry_dt.date() - ts.date()).days
+
             # Entry
-            if not position_mgr.is_open and ts_time >= entry_time and ts_time < exit_time:
+            if not position_mgr.is_open and ts_time >= entry_time and ts_time < exit_time and dte <= 7:
                 resolved_legs = LegBuilder.resolve_strikes(
                     current_strategy.legs,
                     spot_price=spot_price,
@@ -572,7 +578,9 @@ class MetaController:
                 # Check exit conditions
                 exit_reason = None
 
-                if position_mgr.check_time_exit(
+                # Only exit on time if it's the actual expiry day
+                is_expiry_day = ts.date() >= expiry_dt.date()
+                if is_expiry_day and position_mgr.check_time_exit(
                     f"{ts_time.hour}:{ts_time.minute:02d}",
                     current_strategy.exit.exit_time,
                 ):
@@ -625,23 +633,9 @@ class MetaController:
                         # EXECUTE ADJUSTMENT
                         # Case 1: Close specific legs (e.g. Condor Breakout)
                         if adj.legs_closed:
-                            # Simulate exit for these legs
-                            # For simplicity, we assume we close them at current market prices
-                            # In a real engine, we'd call simulator.simulate_exit
-                            # Here we'll just remove them from position_mgr
-                            for leg_to_close in adj.legs_closed:
-                                # Find matching position
-                                matching = [p for p in position_mgr.positions 
-                                           if p.strike == leg_to_close["strike"] 
-                                           and p.right == leg_to_close["right"]]
-                                if matching:
-                                    pos_to_close = matching[0]
-                                    # Record the exit in simulator/stats? 
-                                    # For core logic, we just remove it and adjust pnl
-                                    # But position_manager expects close_all or similar
-                                    # Let's add partial close support or just close/reopen?
-                                    # User wants "add multiple option strategies", usually it's ADDING a leg
-                                    pass
+                            # Use new close_legs method in PositionManager to handle partial exits
+                            position_mgr.close_legs(adj.legs_closed, ts_str, adj.adjustment_type)
+                            logger.info(f"MetaController: Partial Close (Adjustment: {adj.adjustment_type}) at {ts_str}")
 
                         # Case 2: Open specific legs (e.g. Naked to Spread)
                         if adj.legs_opened:

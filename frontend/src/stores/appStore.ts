@@ -64,10 +64,12 @@ interface DataState {
     selectedExpiry: string;
     optionChain: any[];
     indexData: any[];
+    globalUseUnified: boolean;
     setExpiries: (e: any[]) => void;
     setSelectedExpiry: (e: string) => void;
     setOptionChain: (d: any[]) => void;
     setIndexData: (d: any[]) => void;
+    setGlobalUseUnified: (v: boolean) => void;
 }
 
 export const useDataStore = create<DataState>((set) => ({
@@ -75,10 +77,12 @@ export const useDataStore = create<DataState>((set) => ({
     selectedExpiry: '',
     optionChain: [],
     indexData: [],
+    globalUseUnified: true,
     setExpiries: (expiries) => set({ expiries }),
     setSelectedExpiry: (selectedExpiry) => set({ selectedExpiry }),
     setOptionChain: (optionChain) => set({ optionChain }),
     setIndexData: (indexData) => set({ indexData }),
+    setGlobalUseUnified: (globalUseUnified) => set({ globalUseUnified }),
 }));
 
 // --- UI Store ---

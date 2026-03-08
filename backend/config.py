@@ -8,9 +8,12 @@ from pydantic import BaseModel
 class DataConfig(BaseModel):
     """Data source configuration."""
     base_path: str = r"D:\NSE Data\Options\NIFTY\parquet"
+    unified_base_path: str = r"D:\NSE Data\Options\NIFTY\parquet_unified"
+    use_unified: bool = True  # Toggle to prefer unified files if they exist
     options_filename: str = "NIFTY_Options_1minute.parquet"
     futures_filename: str = "NIFTY_FUTURES_1minute.parquet"
     index_filename: str = "NIFTY_Index_1minute.parquet"
+    unified_filename: str = "NIFTY_Unified_1minute.parquet"
     cache_max_size: int = 50  # Max number of expiries to cache in memory
 
 

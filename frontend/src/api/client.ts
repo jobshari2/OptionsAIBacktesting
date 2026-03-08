@@ -22,9 +22,10 @@ export const dataApi = {
         if (endDate) params.set('end_date', formatToApiDate(endDate) || '');
         return fetchJSON(`/api/data/expiries?${params}`);
     },
-    getOptionChain: (expiry: string, timestamp?: string) => {
+    getOptionChain: (expiry: string, timestamp?: string, useUnified?: boolean) => {
         const params = new URLSearchParams({ expiry });
         if (timestamp) params.set('timestamp', timestamp);
+        if (useUnified !== undefined) params.set('use_unified', String(useUnified));
         return fetchJSON(`/api/data/option-chain?${params}`);
     },
     getIndexData: (expiry: string) =>
@@ -33,6 +34,9 @@ export const dataApi = {
         fetchJSON(`/api/data/futures-data?expiry=${expiry}`),
     getCacheInfo: () => fetchJSON('/api/data/cache-info'),
     clearCache: () => fetchJSON('/api/data/clear-cache', { method: 'POST' }),
+    runBenchmark: (count: number = 5) => fetchJSON(`/api/data/benchmark?count=${count}`),
+    getConfig: () => fetchJSON('/api/data/config'),
+    setConfig: (useUnified: boolean) => fetchJSON('/api/data/config', { method: 'POST', body: JSON.stringify({ use_unified: useUnified }) }),
 };
 
 // --- Strategy APIs ---
@@ -162,3 +166,13 @@ export const adaptiveApi = {
     getPositionSnapshot: (runId: string, expiry: string) =>
         fetchJSON(`/api/adaptive/position-snapshot/${runId}/${expiry}`),
 };
+
+// --- ML API ---
+export const mlApi = {
+    getStatus: () => fetchJSON('/api/ml/status'),
+    predict: (expiry: string, timestamp: string, useUnified: boolean = true) =>
+        fetchJSON(`/api/ml/predict?expiry=${expiry}&timestamp=${timestamp}&use_unified=${useUnified}`, { method: 'POST' }),
+    train: () => fetchJSON('/api/ml/train', { method: 'POST' }),
+    getHistoricalPredictions: (expiry: string) => fetchJSON(`/api/ml/historical/${expiry}`),
+};
+

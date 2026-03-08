@@ -1,0 +1,19 @@
+name: ml_directional
+description: Buy ATM Call if ML predicts UP (>0.60 probability), otherwise wait.
+lot_size: 25
+max_positions: 1
+tags: [directional, ml, intraday]
+legs:
+  - direction: buy
+    right: CE
+    strike_offset: 0
+    quantity: 1
+    label: ML_Call
+entry:
+  entry_time: "09:20"
+  ml_prediction_direction: UP
+  ml_prediction_threshold: 0.60
+exit:
+  exit_time: "15:15"
+  stop_loss_pct: 10
+  target_profit_pct: 20

@@ -17,6 +17,7 @@ from backend.strategy_engine import Strategy, StrategyLoader
 from backend.strategy_engine.leg_builder import LegBuilder
 from .position_manager import PositionManager, Trade
 from .simulator import TradeSimulator
+from backend.ml_engine.inference import MLEnsemblePredictor
 
 
 @dataclass
@@ -106,6 +107,7 @@ class BacktestEngine:
         self.data_loader = DataLoader()
         self.expiry_discovery = ExpiryDiscovery()
         self.simulator = TradeSimulator()
+        self.ml_predictor = MLEnsemblePredictor()
         self.results: dict[str, BacktestResult] = {}
         self.progress: dict[str, dict] = {}
 
@@ -270,6 +272,11 @@ class BacktestEngine:
 
         if not timestamps:
             return {"trades": []}
+            
+        # Pre-compute ML features if required
+        ml_features = None
+        if strategy.entry.ml_prediction_threshold and self.ml_predictor.is_ready():
+            ml_features = self.ml_predictor.builder.build_features_for_expiry(expiry_folder)
 
         # Get trading time boundaries
         entry_h, entry_m = map(int, strategy.entry.entry_time.split(":"))
@@ -307,29 +314,52 @@ class BacktestEngine:
 
             # --- Entry Logic ---
             if not position_mgr.is_open and ts_time >= entry_time and ts_time < exit_time:
-                # Resolve legs to actual strikes
-                resolved_legs = LegBuilder.resolve_strikes(
-                    strategy.legs,
-                    spot_price=spot_price,
-                    available_strikes=available_strikes,
-                )
-
-                # Get current prices for legs
-                resolved_legs = LegBuilder.get_leg_prices(resolved_legs, options_at_ts)
-
-                # Check if we have valid prices
-                if all(leg["ltp"] > 0 for leg in resolved_legs):
-                    # Simulate entry with slippage and costs
-                    adjusted_legs, entry_slippage, entry_costs = self.simulator.simulate_entry(
-                        resolved_legs, strategy.lot_size
+                
+                # Check ML Conditions
+                entry_signal = True
+                if strategy.entry.ml_prediction_threshold:
+                    if ml_features is None:
+                        entry_signal = False
+                    else:
+                        row_df = ml_features.filter(pl.col("Date") == ts)
+                        if len(row_df) == 0:
+                            entry_signal = False
+                        else:
+                            try:
+                                X = row_df.select(self.ml_predictor.features).to_pandas()
+                                probs = self.ml_predictor.xgb_model.predict_proba(X)[0]
+                                p_map = {"SIDEWAYS": probs[0], "UP": probs[1], "DOWN": probs[2]}
+                                req_dir = strategy.entry.ml_prediction_direction
+                                req_thres = strategy.entry.ml_prediction_threshold
+                                if p_map.get(req_dir, 0) < req_thres:
+                                    entry_signal = False
+                            except Exception:
+                                entry_signal = False
+                
+                if entry_signal:
+                    # Resolve legs to actual strikes
+                    resolved_legs = LegBuilder.resolve_strikes(
+                        strategy.legs,
+                        spot_price=spot_price,
+                        available_strikes=available_strikes,
                     )
 
-                    position_mgr.open_position(adjusted_legs, ts_str, strategy.lot_size)
+                    # Get current prices for legs
+                    resolved_legs = LegBuilder.get_leg_prices(resolved_legs, options_at_ts)
 
-                    # Calculate initial credit for stop-loss calculations
-                    initial_credit = LegBuilder.calculate_net_premium(
-                        adjusted_legs, strategy.lot_size
-                    )
+                    # Check if we have valid prices
+                    if all(leg.get("ltp", 0) > 0 for leg in resolved_legs):
+                        # Simulate entry with slippage and costs
+                        adjusted_legs, entry_slippage, entry_costs = self.simulator.simulate_entry(
+                            resolved_legs, strategy.lot_size
+                        )
+
+                        position_mgr.open_position(adjusted_legs, ts_str, strategy.lot_size)
+
+                        # Calculate initial credit for stop-loss calculations
+                        initial_credit = LegBuilder.calculate_net_premium(
+                            adjusted_legs, strategy.lot_size
+                        )
 
             # --- Position Update & Exit Logic ---
             elif position_mgr.is_open:

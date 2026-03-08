@@ -72,6 +72,7 @@ class PositionManager:
 
     lot_size: int = 25
     positions: list[LegPosition] = field(default_factory=list)
+    closed_leg_history: list[dict] = field(default_factory=list) # Tracks legs closed during adjustments
     closed_trades: list[Trade] = field(default_factory=list)
     _trade_counter: int = 0
 
@@ -138,6 +139,36 @@ class PositionManager:
             if key in price_map:
                 pos.update_price(price_map[key])
 
+    def close_legs(self, legs_to_close: list[dict], timestamp: str, exit_reason: str):
+        """
+        Close specific legs (partial exit/adjustment).
+        """
+        remaining_positions = []
+        for pos in self.positions:
+            match = False
+            for target in legs_to_close:
+                if pos.strike == target["strike"] and pos.right == target["right"]:
+                    # Record closed leg info
+                    self.closed_leg_history.append({
+                        "strike": pos.strike,
+                        "right": pos.right,
+                        "direction": pos.direction,
+                        "quantity": pos.quantity,
+                        "entry_price": pos.entry_price,
+                        "exit_price": pos.current_price,
+                        "pnl_points": pos.pnl_points,
+                        "label": f"{pos.label} (Closed: {exit_reason})",
+                        "entry_time": pos.entry_time,
+                        "exit_time": timestamp
+                    })
+                    match = True
+                    break
+            
+            if not match:
+                remaining_positions.append(pos)
+        
+        self.positions = remaining_positions
+
     def close_all(
         self,
         timestamp: str,
@@ -157,6 +188,12 @@ class PositionManager:
         exit_premium = 0.0
 
         legs_data = []
+
+        # Add previously closed legs from adjustments
+        for h_leg in self.closed_leg_history:
+            legs_data.append(h_leg)
+
+        # Add currently open legs
         for pos in self.positions:
             sign = 1 if pos.direction == "sell" else -1
             entry_premium += pos.entry_price * sign * pos.quantity
@@ -171,6 +208,8 @@ class PositionManager:
                 "exit_price": pos.current_price,
                 "pnl_points": pos.pnl_points,
                 "label": pos.label,
+                "entry_time": pos.entry_time,
+                "exit_time": timestamp
             })
 
         # PnL = (entry_premium - exit_premium) * lot_size for credit strategies
@@ -202,6 +241,7 @@ class PositionManager:
 
         self.closed_trades.append(trade)
         self.positions.clear()
+        self.closed_leg_history.clear()
         return trade
 
     def check_stop_loss(
