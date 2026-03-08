@@ -110,6 +110,21 @@ export const aiApi = {
     },
     getSuggestions: (strategyName: string) =>
         fetchJSON(`/api/ai/suggestions/${strategyName}`),
+    getModels: () =>
+        fetchJSON('/api/ai/models'),
+    analyzeChain: async (payload: {
+        expiry: string;
+        spot_price: number;
+        futures_price: number;
+        option_chain: any[];
+        spikes: any[];
+        model_name?: string;
+    }) => {
+        return fetchJSON('/api/ai/analyze-chain', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        });
+    }
 };
 
 // --- Intelligence Engine APIs ---
@@ -185,4 +200,3 @@ export const mlApi = {
     train: () => fetchJSON('/api/ml/train', { method: 'POST' }),
     getHistoricalPredictions: (expiry: string) => fetchJSON(`/api/ml/historical/${expiry}`),
 };
-

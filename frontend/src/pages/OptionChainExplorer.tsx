@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
-import { dataApi } from '../api/client';
+import { dataApi, aiApi } from '../api/client';
 import { useDataStore } from '../stores/appStore';
+import ReactMarkdown from 'react-markdown';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 export default function OptionChainExplorer() {
@@ -21,6 +22,14 @@ export default function OptionChainExplorer() {
     const [volThreshold, setVolThreshold] = useState(0.5);
     const [minLtp, setMinLtp] = useState(0);
 
+    // AI State
+    const [aiLoading, setAiLoading] = useState(false);
+    const [aiResult, setAiResult] = useState<string | null>(null);
+    const [aiError, setAiError] = useState<string | null>(null);
+    const [isAiCollapsed, setIsAiCollapsed] = useState(false);
+    const [aiModels, setAiModels] = useState<any[]>([]);
+    const [selectedAiModel, setSelectedAiModel] = useState('gemini-1.5-flash');
+
     // New States for Time Stepper
     const [timestamps, setTimestamps] = useState<string[]>([]);
     const [currentIndex, setCurrentIndex] = useState(0);
@@ -32,7 +41,25 @@ export default function OptionChainExplorer() {
 
     useEffect(() => {
         loadExpiries();
+        loadAiModels();
     }, []);
+
+    const loadAiModels = async () => {
+        try {
+            const data = await aiApi.getModels();
+            if (data.models && data.models.length > 0) {
+                setAiModels(data.models);
+                // Set default to 1.5 flash if available
+                if (data.models.find((m: any) => m.name === 'gemini-1.5-flash')) {
+                    setSelectedAiModel('gemini-1.5-flash');
+                } else {
+                    setSelectedAiModel(data.models[0].name);
+                }
+            }
+        } catch (e) {
+            console.error("Failed to load AI models:", e);
+        }
+    };
 
     const loadExpiries = async () => {
         try {
@@ -243,6 +270,40 @@ export default function OptionChainExplorer() {
     const closestSpotStrike = getClosestStrike(currentSpot);
     const closestFutureStrike = getClosestStrike(currentFuture);
 
+    const handleGenerateAIInsights = async () => {
+        if (!selectedExpiry) return;
+        setAiLoading(true);
+        setAiError(null);
+        try {
+            // Pick a subset of option chain to save bandwidth/tokens
+            const atmStrike = closestSpotStrike || strikes[Math.floor(strikes.length / 2)];
+            const indexAtm = strikes.indexOf(atmStrike);
+            const startIdx = Math.max(0, indexAtm - 20);
+            const endIdx = Math.min(strikes.length - 1, indexAtm + 20);
+            const relevantStrikes = strikes.slice(startIdx, endIdx);
+
+            const subsetChain = optionChain.filter((r: any) => relevantStrikes.includes(r.Strike));
+
+            const payload = {
+                expiry: selectedExpiry,
+                spot_price: currentSpot || 0,
+                futures_price: currentFuture || 0,
+                option_chain: subsetChain,
+                spikes: oiSpikes.slice(0, 50),
+                model_name: selectedAiModel
+            };
+
+            const res = await aiApi.analyzeChain(payload);
+            setAiResult(res.analysis);
+            setIsAiCollapsed(false);
+        } catch (e: any) {
+            console.error("AI Error:", e);
+            setAiError(e.message || "Failed to generate AI insights.");
+        } finally {
+            setAiLoading(false);
+        }
+    };
+
     // Prepare OI Data for the chart
     const oiData = useMemo(() => {
         return strikes.map(strike => {
@@ -391,6 +452,72 @@ export default function OptionChainExplorer() {
                             </div>
                         </div>
                     </div>
+                </div>
+            )}
+
+            {/* AI Insights Card */}
+            {selectedExpiry && timestamps.length > 0 && (
+                <div className="card fade-in" style={{ marginBottom: 16 }}>
+                    <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div className="card-title" onClick={() => setIsAiCollapsed(!isAiCollapsed)} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span>{isAiCollapsed ? '▶' : '▼'}</span>
+                            <span style={{
+                                background: 'linear-gradient(90deg, #A855F7, #3B82F6)',
+                                WebkitBackgroundClip: 'text',
+                                WebkitTextFillColor: 'transparent',
+                                fontWeight: 700
+                            }}>
+                                Gemini AI Insights ✨
+                            </span>
+                        </div>
+                        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                            {aiModels.length > 0 && (
+                                <select
+                                    className="form-select"
+                                    value={selectedAiModel}
+                                    onChange={(e) => setSelectedAiModel(e.target.value)}
+                                    style={{ width: 180, height: 32, fontSize: 12, padding: '0 8px', margin: 0 }}
+                                >
+                                    {aiModels.map(m => (
+                                        <option key={m.name} value={m.name}>{m.display_name}</option>
+                                    ))}
+                                </select>
+                            )}
+                            <button
+                                className="btn btn-primary"
+                                onClick={handleGenerateAIInsights}
+                                disabled={aiLoading || loading}
+                                style={{
+                                    background: 'linear-gradient(90deg, #9333ea, #3b82f6)',
+                                    border: 'none',
+                                    padding: '6px 16px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 8
+                                }}
+                            >
+                                {aiLoading ? <div className="spinner-small" style={{ borderColor: 'rgba(255,255,255,0.3)', borderTopColor: '#fff' }} /> : '✨'}
+                                {aiLoading ? 'Analyzing...' : 'Ask Gemini'}
+                            </button>
+                        </div>
+                    </div>
+
+                    {!isAiCollapsed && (aiResult || aiError || aiLoading) && (
+                        <div style={{ padding: '20px', background: 'var(--bg-body)', borderTop: '1px solid var(--border-color)', fontSize: 14, lineHeight: 1.6 }}>
+                            {aiError && <div style={{ color: 'var(--red)', padding: 12, background: 'rgba(239,68,68,0.1)', borderRadius: 6 }}>{aiError}</div>}
+                            {aiLoading && !aiResult && (
+                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: 40, color: 'var(--text-muted)' }}>
+                                    <div className="spinner" style={{ marginBottom: 16, borderColor: 'var(--border-color)', borderTopColor: 'var(--purple)' }} />
+                                    <div>Running deep AI analysis on anomalies and option chain structure...</div>
+                                </div>
+                            )}
+                            {aiResult && !aiLoading && (
+                                <div className="markdown-body" style={{ color: 'var(--text-color)' }}>
+                                    <ReactMarkdown>{aiResult}</ReactMarkdown>
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             )}
 
