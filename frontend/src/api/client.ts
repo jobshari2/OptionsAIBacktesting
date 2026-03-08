@@ -37,6 +37,16 @@ export const dataApi = {
     runBenchmark: (count: number = 5) => fetchJSON(`/api/data/benchmark?count=${count}`),
     getConfig: () => fetchJSON('/api/data/config'),
     setConfig: (useUnified: boolean) => fetchJSON('/api/data/config', { method: 'POST', body: JSON.stringify({ use_unified: useUnified }) }),
+    getOISpikes: (expiry: string, threshold: number = 0.5, volThreshold: number = 0.5, minLtp: number = 0, useUnified?: boolean) => {
+        const params = new URLSearchParams({
+            expiry,
+            threshold: String(threshold),
+            vol_threshold: String(volThreshold),
+            min_ltp: String(minLtp)
+        });
+        if (useUnified !== undefined) params.set('use_unified', String(useUnified));
+        return fetchJSON(`/api/data/oi-spikes?${params}`);
+    },
 };
 
 // --- Strategy APIs ---

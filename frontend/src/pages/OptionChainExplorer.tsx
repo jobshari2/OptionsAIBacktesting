@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { dataApi } from '../api/client';
 import { useDataStore } from '../stores/appStore';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 export default function OptionChainExplorer() {
     const { expiries, setExpiries, selectedExpiry, setSelectedExpiry, optionChain, setOptionChain, globalUseUnified } = useDataStore();
@@ -10,6 +11,15 @@ export default function OptionChainExplorer() {
     const [showCE, setShowCE] = useState(true);
     const [showPE, setShowPE] = useState(true);
     const [metrics, setMetrics] = useState<{ load_time_ms?: number; source_type?: string }>({});
+    const [isTableCollapsed, setIsTableCollapsed] = useState(false);
+    const [isChartCollapsed, setIsChartCollapsed] = useState(false);
+    const [isSpikesCollapsed, setIsSpikesCollapsed] = useState(false);
+    const [oiSpikes, setOiSpikes] = useState<any[]>([]);
+    const [spikeLoading, setSpikeLoading] = useState(false);
+    const [spikeStats, setSpikeStats] = useState<any>(null);
+    const [spikeThreshold, setSpikeThreshold] = useState(0.5);
+    const [volThreshold, setVolThreshold] = useState(0.5);
+    const [minLtp, setMinLtp] = useState(0);
 
     // New States for Time Stepper
     const [timestamps, setTimestamps] = useState<string[]>([]);
@@ -58,6 +68,9 @@ export default function OptionChainExplorer() {
             setIndexLocalData(idxRes.data || []);
             setFuturesLocalData(futRes.data || []);
 
+            // Fetch Market Spikes (OI + Volume) for the entire week
+            loadSpikes(expiry, spikeThreshold, volThreshold, minLtp);
+
         } catch (e) {
             console.error(e);
             setOptionChain([]);
@@ -65,6 +78,19 @@ export default function OptionChainExplorer() {
             setMetrics({});
         }
         setLoading(false);
+    };
+
+    const loadSpikes = async (expiry: string, threshold: number, volThreshold: number, minLtp: number) => {
+        setSpikeLoading(true);
+        try {
+            const res = await dataApi.getOISpikes(expiry, threshold, volThreshold, minLtp, globalUseUnified);
+            setOiSpikes(res.spikes || []);
+            setSpikeStats(res.stats || null);
+        } catch (e) {
+            console.error('Error loading spikes:', e);
+            setOiSpikes([]);
+        }
+        setSpikeLoading(false);
     };
 
     // Loader for time-stepping without refreshing index/futures
@@ -217,6 +243,19 @@ export default function OptionChainExplorer() {
     const closestSpotStrike = getClosestStrike(currentSpot);
     const closestFutureStrike = getClosestStrike(currentFuture);
 
+    // Prepare OI Data for the chart
+    const oiData = useMemo(() => {
+        return strikes.map(strike => {
+            const ce = filteredChain.find((r: any) => r.Strike === strike && r.Right === 'CE') || {};
+            const pe = filteredChain.find((r: any) => r.Strike === strike && r.Right === 'PE') || {};
+            return {
+                strike,
+                ce_oi: ce.OI || 0,
+                pe_oi: pe.OI || 0
+            };
+        });
+    }, [strikes, filteredChain]);
+
     return (
         <div className="fade-in">
             {/* Top Control Bar */}
@@ -359,105 +398,310 @@ export default function OptionChainExplorer() {
             {loading ? (
                 <div className="loading-overlay"><div className="spinner" /><span>Loading option chain...</span></div>
             ) : filteredChain.length > 0 ? (
-                <div className="card">
-                    <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div className="card-title">
-                            Option Chain
-                            <span style={{ marginLeft: 12, fontSize: 12, color: 'var(--text-muted)' }}>
-                                {filteredChain.length} records, {strikes.length} strikes
-                            </span>
+                <>
+                    <div className="card" style={{ marginBottom: 16 }}>
+                        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div className="card-title" onClick={() => setIsTableCollapsed(!isTableCollapsed)} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span>{isTableCollapsed ? '▶' : '▼'}</span>
+                                Option Chain
+                                <span style={{ marginLeft: 12, fontSize: 12, color: 'var(--text-muted)' }}>
+                                    {filteredChain.length} records, {strikes.length} strikes
+                                </span>
+                            </div>
+                            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                                {metrics.load_time_ms !== undefined && (
+                                    <div style={{ display: 'flex', gap: 12, fontSize: 11 }}>
+                                        <div className="badge" style={{ background: 'rgba(59, 130, 246, 0.1)', color: 'var(--blue)' }}>
+                                            Mode: {metrics.source_type?.toUpperCase()}
+                                        </div>
+                                        <div className="badge" style={{ background: 'rgba(139, 92, 246, 0.1)', color: 'var(--purple)' }}>
+                                            Load Time: {metrics.load_time_ms}ms
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
                         </div>
-                        {metrics.load_time_ms !== undefined && (
-                            <div style={{ display: 'flex', gap: 12, fontSize: 11 }}>
-                                <div className="badge" style={{ background: 'rgba(59, 130, 246, 0.1)', color: 'var(--blue)' }}>
-                                    Mode: {metrics.source_type?.toUpperCase()}
-                                </div>
-                                <div className="badge" style={{ background: 'rgba(139, 92, 246, 0.1)', color: 'var(--purple)' }}>
-                                    Load Time: {metrics.load_time_ms}ms
-                                </div>
+
+                        {!isTableCollapsed && (
+                            <div className="table-container" style={{
+                                maxHeight: 600,
+                                overflowY: 'auto',
+                                opacity: stepping ? 0.7 : 1,
+                                transition: 'opacity 0.2s',
+                                filter: stepping ? 'blur(0.5px)' : 'none'
+                            }}>
+                                <table className="option-chain-table">
+                                    <thead>
+                                        <tr>
+                                            <th colSpan={4} style={{ textAlign: 'center', background: 'rgba(16, 185, 129, 0.1)', color: 'var(--green)' }}>CALLS (CE)</th>
+                                            <th style={{ textAlign: 'center', background: 'var(--bg-card)' }}>STRIKE</th>
+                                            <th colSpan={4} style={{ textAlign: 'center', background: 'rgba(239, 68, 68, 0.1)', color: 'var(--red)' }}>PUTS (PE)</th>
+                                        </tr>
+                                        <tr>
+                                            <th style={{ textAlign: 'right' }}>OI</th>
+                                            <th style={{ textAlign: 'right' }}>Volume</th>
+                                            <th style={{ textAlign: 'right' }}>Close</th>
+                                            <th style={{ textAlign: 'right' }}>LTP</th>
+                                            <th style={{ textAlign: 'center' }}>Price</th>
+                                            <th style={{ textAlign: 'left' }}>LTP</th>
+                                            <th style={{ textAlign: 'left' }}>Close</th>
+                                            <th style={{ textAlign: 'left' }}>Volume</th>
+                                            <th style={{ textAlign: 'left' }}>OI</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {strikes.map((strike: number, i: number) => {
+                                            const ce = filteredChain.find((r: any) => r.Strike === strike && r.Right === 'CE') || {};
+                                            const pe = filteredChain.find((r: any) => r.Strike === strike && r.Right === 'PE') || {};
+                                            const isSpotATM = strike === closestSpotStrike;
+                                            const isFutureATM = strike === closestFutureStrike;
+
+                                            if (!ce.Strike && !pe.Strike) return null;
+
+                                            let rowBg = 'inherit';
+                                            let strikeBg = 'var(--bg-input)';
+                                            let strikeBorder = 'none';
+
+                                            if (isSpotATM && isFutureATM) {
+                                                rowBg = 'rgba(59, 130, 246, 0.08)';
+                                                strikeBorder = '1px solid var(--blue)';
+                                            } else if (isSpotATM) {
+                                                rowBg = 'rgba(59, 130, 246, 0.05)';
+                                                strikeBorder = '1px dashed var(--blue)';
+                                            } else if (isFutureATM) {
+                                                rowBg = 'rgba(139, 92, 246, 0.05)';
+                                                strikeBorder = '1px dashed var(--purple)';
+                                            }
+
+                                            return (
+                                                <tr key={i} style={{ background: rowBg }}>
+                                                    <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{(ce.OI || 0).toLocaleString()}</td>
+                                                    <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{(ce.Volume || 0).toLocaleString()}</td>
+                                                    <td style={{ textAlign: 'right' }}>{(ce.Close || 0).toFixed(2)}</td>
+                                                    <td style={{ textAlign: 'right', fontWeight: 600, color: ce.Close ? 'var(--green)' : 'inherit' }}>{(ce.Close || '--')}</td>
+
+                                                    <td style={{
+                                                        textAlign: 'center',
+                                                        fontWeight: 700,
+                                                        background: isSpotATM || isFutureATM ? 'var(--bg-card)' : strikeBg,
+                                                        border: strikeBorder,
+                                                        position: 'relative'
+                                                    }}>
+                                                        {strike}
+                                                        {isSpotATM && <div title="Closest to Spot" style={{ position: 'absolute', top: -2, right: 2, fontSize: 8, color: 'var(--blue)' }}>●</div>}
+                                                        {isFutureATM && <div title="Closest to Future" style={{ position: 'absolute', bottom: -2, right: 2, fontSize: 8, color: 'var(--purple)' }}>◆</div>}
+                                                    </td>
+
+                                                    <td style={{ textAlign: 'left', fontWeight: 600, color: pe.Close ? 'var(--red)' : 'inherit' }}>{(pe.Close || '--')}</td>
+                                                    <td style={{ textAlign: 'left' }}>{(pe.Close || 0).toFixed(2)}</td>
+                                                    <td style={{ textAlign: 'left', color: 'var(--text-muted)' }}>{(pe.Volume || 0).toLocaleString()}</td>
+                                                    <td style={{ textAlign: 'left', color: 'var(--text-muted)' }}>{(pe.OI || 0).toLocaleString()}</td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
                             </div>
                         )}
                     </div>
-                    <div className="table-container" style={{
-                        maxHeight: 600,
-                        overflowY: 'auto',
-                        opacity: stepping ? 0.7 : 1,
-                        transition: 'opacity 0.2s',
-                        filter: stepping ? 'blur(0.5px)' : 'none'
-                    }}>
-                        <table className="option-chain-table">
-                            <thead>
-                                <tr>
-                                    <th colSpan={4} style={{ textAlign: 'center', background: 'rgba(16, 185, 129, 0.1)', color: 'var(--green)' }}>CALLS (CE)</th>
-                                    <th style={{ textAlign: 'center', background: 'var(--bg-card)' }}>STRIKE</th>
-                                    <th colSpan={4} style={{ textAlign: 'center', background: 'rgba(239, 68, 68, 0.1)', color: 'var(--red)' }}>PUTS (PE)</th>
-                                </tr>
-                                <tr>
-                                    <th style={{ textAlign: 'right' }}>OI</th>
-                                    <th style={{ textAlign: 'right' }}>Volume</th>
-                                    <th style={{ textAlign: 'right' }}>Close</th>
-                                    <th style={{ textAlign: 'right' }}>LTP</th>
-                                    <th style={{ textAlign: 'center' }}>Price</th>
-                                    <th style={{ textAlign: 'left' }}>LTP</th>
-                                    <th style={{ textAlign: 'left' }}>Close</th>
-                                    <th style={{ textAlign: 'left' }}>Volume</th>
-                                    <th style={{ textAlign: 'left' }}>OI</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {strikes.map((strike: number, i: number) => {
-                                    const ce = filteredChain.find((r: any) => r.Strike === strike && r.Right === 'CE') || {};
-                                    const pe = filteredChain.find((r: any) => r.Strike === strike && r.Right === 'PE') || {};
-                                    const isSpotATM = strike === closestSpotStrike;
-                                    const isFutureATM = strike === closestFutureStrike;
 
-                                    if (!ce.Strike && !pe.Strike) return null;
-
-                                    let rowBg = 'inherit';
-                                    let strikeBg = 'var(--bg-input)';
-                                    let strikeBorder = 'none';
-
-                                    if (isSpotATM && isFutureATM) {
-                                        rowBg = 'rgba(59, 130, 246, 0.08)';
-                                        strikeBorder = '1px solid var(--blue)';
-                                    } else if (isSpotATM) {
-                                        rowBg = 'rgba(59, 130, 246, 0.05)';
-                                        strikeBorder = '1px dashed var(--blue)';
-                                    } else if (isFutureATM) {
-                                        rowBg = 'rgba(139, 92, 246, 0.05)';
-                                        strikeBorder = '1px dashed var(--purple)';
-                                    }
-
-                                    return (
-                                        <tr key={i} style={{ background: rowBg }}>
-                                            <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{(ce.OI || 0).toLocaleString()}</td>
-                                            <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{(ce.Volume || 0).toLocaleString()}</td>
-                                            <td style={{ textAlign: 'right' }}>{(ce.Close || 0).toFixed(2)}</td>
-                                            <td style={{ textAlign: 'right', fontWeight: 600, color: ce.Close ? 'var(--green)' : 'inherit' }}>{(ce.Close || '--')}</td>
-
-                                            <td style={{
-                                                textAlign: 'center',
-                                                fontWeight: 700,
-                                                background: isSpotATM || isFutureATM ? 'var(--bg-card)' : strikeBg,
-                                                border: strikeBorder,
-                                                position: 'relative'
-                                            }}>
-                                                {strike}
-                                                {isSpotATM && <div title="Closest to Spot" style={{ position: 'absolute', top: -2, right: 2, fontSize: 8, color: 'var(--blue)' }}>●</div>}
-                                                {isFutureATM && <div title="Closest to Future" style={{ position: 'absolute', bottom: -2, right: 2, fontSize: 8, color: 'var(--purple)' }}>◆</div>}
-                                            </td>
-
-                                            <td style={{ textAlign: 'left', fontWeight: 600, color: pe.Close ? 'var(--red)' : 'inherit' }}>{(pe.Close || '--')}</td>
-                                            <td style={{ textAlign: 'left' }}>{(pe.Close || 0).toFixed(2)}</td>
-                                            <td style={{ textAlign: 'left', color: 'var(--text-muted)' }}>{(pe.Volume || 0).toLocaleString()}</td>
-                                            <td style={{ textAlign: 'left', color: 'var(--text-muted)' }}>{(pe.OI || 0).toLocaleString()}</td>
-                                        </tr>
-                                    );
-                                })}
-                            </tbody>
-                        </table>
+                    {/* OI Buildup Chart */}
+                    <div className="card fade-in" style={{ marginBottom: 16 }}>
+                        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div className="card-title" onClick={() => setIsChartCollapsed(!isChartCollapsed)} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span>{isChartCollapsed ? '▶' : '▼'}</span>
+                                OI Buildup (Open Interest)
+                            </div>
+                        </div>
+                        {!isChartCollapsed && (
+                            <div style={{ height: 400, width: '100%', padding: '20px 0' }}>
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <BarChart data={oiData} margin={{ top: 10, right: 30, left: 20, bottom: 20 }}>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
+                                        <XAxis
+                                            dataKey="strike"
+                                            stroke="var(--text-muted)"
+                                            fontSize={11}
+                                            tickLine={false}
+                                            axisLine={false}
+                                            dy={10}
+                                            label={{ value: 'Strike Price', position: 'insideBottom', offset: -10, fontSize: 12, fill: 'var(--text-muted)' }}
+                                        />
+                                        <YAxis
+                                            stroke="var(--text-muted)"
+                                            fontSize={11}
+                                            tickLine={false}
+                                            axisLine={false}
+                                            tickFormatter={(val) => val >= 1000000 ? `${(val / 1000000).toFixed(1)}M` : val >= 1000 ? `${(val / 1000).toFixed(0)}k` : val}
+                                        />
+                                        <Tooltip
+                                            contentStyle={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)', borderRadius: '8px', color: 'var(--text-body)' }}
+                                            itemStyle={{ fontSize: '12px' }}
+                                            formatter={(val: any) => val.toLocaleString()}
+                                        />
+                                        <Legend wrapperStyle={{ paddingTop: '20px' }} />
+                                        <Bar dataKey="ce_oi" name="Call OI" fill="var(--green)" radius={[4, 4, 0, 0]} opacity={0.8} />
+                                        <Bar dataKey="pe_oi" name="Put OI" fill="var(--red)" radius={[4, 4, 0, 0]} opacity={0.8} />
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            </div>
+                        )}
                     </div>
-                </div>
+
+                    {/* Sudden OI Spikes Table */}
+                    <div className="card fade-in" style={{ marginBottom: 32 }}>
+                        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div className="card-title" onClick={() => setIsSpikesCollapsed(!isSpikesCollapsed)} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span>{isSpikesCollapsed ? '▶' : '▼'}</span>
+                                Sudden Market Spikes (OI AND Volume)
+                                <span style={{ marginLeft: 12, fontSize: 12, color: 'var(--text-muted)' }}>
+                                    {spikeLoading ? 'Scanning expiry week...' :
+                                        oiSpikes.length === 1000 ? `Showing top 1000 recent anomalies` :
+                                            `${oiSpikes.length} anomalies detected`}
+                                    {spikeStats && ` (Scanned ${spikeStats.rows_scanned.toLocaleString()} rows)`}
+                                </span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                                    <span style={{ color: 'var(--text-muted)' }}>OI Threshold:</span>
+                                    <select
+                                        className="form-select"
+                                        style={{ height: 32, padding: '0 8px', width: 90, fontSize: 12 }}
+                                        value={spikeThreshold}
+                                        onChange={(e) => {
+                                            const val = parseFloat(e.target.value);
+                                            setSpikeThreshold(val);
+                                            if (selectedExpiry) loadSpikes(selectedExpiry, val, volThreshold, minLtp);
+                                        }}
+                                    >
+                                        <option value={0.5}>50%</option>
+                                        <option value={0.75}>75%</option>
+                                        <option value={1.0}>100%</option>
+                                        <option value={1.5}>150%</option>
+                                        <option value={2.0}>200%</option>
+                                    </select>
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                                    <span style={{ color: 'var(--text-muted)' }}>Vol Threshold:</span>
+                                    <select
+                                        className="form-select"
+                                        style={{ height: 32, padding: '0 8px', width: 90, fontSize: 12 }}
+                                        value={volThreshold}
+                                        onChange={(e) => {
+                                            const val = parseFloat(e.target.value);
+                                            setVolThreshold(val);
+                                            if (selectedExpiry) loadSpikes(selectedExpiry, spikeThreshold, val, minLtp);
+                                        }}
+                                    >
+                                        <option value={0.5}>50%</option>
+                                        <option value={0.75}>75%</option>
+                                        <option value={1.0}>100%</option>
+                                        <option value={1.5}>150%</option>
+                                        <option value={2.0}>200%</option>
+                                    </select>
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                                    <span style={{ color: 'var(--text-muted)' }}>Min LTP:</span>
+                                    <input
+                                        type="number"
+                                        className="form-control"
+                                        style={{ height: 32, padding: '0 8px', width: 80, fontSize: 12 }}
+                                        value={minLtp}
+                                        onChange={(e) => {
+                                            const val = parseFloat(e.target.value) || 0;
+                                            setMinLtp(val);
+                                        }}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter' && selectedExpiry) {
+                                                loadSpikes(selectedExpiry, spikeThreshold, volThreshold, minLtp);
+                                            }
+                                        }}
+                                        placeholder="0"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                        {!isSpikesCollapsed && (
+                            <div className="table-container" style={{ maxHeight: 400, overflowY: 'auto' }}>
+                                {spikeLoading ? (
+                                    <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>
+                                        <div className="spinner" style={{ margin: '0 auto 12px' }}></div>
+                                        Scanning entire expiry week for Open Interest & Volume shifts...
+                                    </div>
+                                ) : oiSpikes.length > 0 ? (
+                                    <table className="option-chain-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Time</th>
+                                                <th>Strike</th>
+                                                <th>Type</th>
+                                                <th style={{ textAlign: 'right' }}>Old OI</th>
+                                                <th style={{ textAlign: 'right' }}>New OI</th>
+                                                <th style={{ textAlign: 'right' }}>OI Chg %</th>
+                                                <th style={{ textAlign: 'right' }}>Old Vol</th>
+                                                <th style={{ textAlign: 'right' }}>New Volume</th>
+                                                <th style={{ textAlign: 'right' }}>Vol Chg %</th>
+                                                <th style={{ textAlign: 'right' }}>LTP</th>
+                                                <th style={{ textAlign: 'right' }}>Price Move</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {oiSpikes.map((s, idx) => (
+                                                <tr key={idx} onClick={() => {
+                                                    // Jump to this time
+                                                    const timeIdx = timestamps.indexOf(s.timestamp);
+                                                    if (timeIdx !== -1) {
+                                                        setCurrentIndex(timeIdx);
+                                                        loadChainAtTime(timestamps[timeIdx]);
+                                                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                                                    }
+                                                }} style={{ cursor: 'pointer' }}>
+                                                    <td>{s.timestamp}</td>
+                                                    <td style={{ fontWeight: 700 }}>{s.Strike}</td>
+                                                    <td>
+                                                        <span className={`badge ${s.Right === 'CE' ? 'badge-success' : 'badge-danger'}`} style={{ fontSize: 10 }}>
+                                                            {s.Right}
+                                                        </span>
+                                                    </td>
+                                                    <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{s.prev_oi.toLocaleString()}</td>
+                                                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{s.OI.toLocaleString()}</td>
+                                                    <td style={{
+                                                        textAlign: 'right',
+                                                        color: 'var(--blue)',
+                                                        fontWeight: 700
+                                                    }}>
+                                                        +{s.oi_increase_pct}%
+                                                    </td>
+                                                    <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{s.prev_vol.toLocaleString()}</td>
+                                                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{s.Volume.toLocaleString()}</td>
+                                                    <td style={{
+                                                        textAlign: 'right',
+                                                        color: 'var(--purple)',
+                                                        fontWeight: 700
+                                                    }}>
+                                                        +{s.vol_increase_pct}%
+                                                    </td>
+                                                    <td style={{ textAlign: 'right' }}>{s.Close.toFixed(2)}</td>
+                                                    <td style={{
+                                                        textAlign: 'right',
+                                                        fontWeight: 600,
+                                                        color: s.price_change > 0 ? 'var(--green)' : s.price_change < 0 ? 'var(--red)' : 'var(--text-muted)'
+                                                    }}>
+                                                        {s.price_change > 0 ? '+' : ''}{s.price_change.toFixed(2)}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                ) : (
+                                    <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>
+                                        No spikes (OI AND Volume) detected in the selected expiry period.
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </>
             ) : selectedExpiry ? (
                 <div className="card">
                     <div className="empty-state">
@@ -474,7 +718,8 @@ export default function OptionChainExplorer() {
                         <p>Choose an expiry date to explore the historical option chain.</p>
                     </div>
                 </div>
-            )}
-        </div>
+            )
+            }
+        </div >
     );
 }

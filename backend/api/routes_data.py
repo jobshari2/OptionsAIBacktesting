@@ -8,6 +8,7 @@ from backend.data_engine import DataLoader, ExpiryDiscovery, DataJoiner
 from backend.analytics.greeks import GreeksCalculator
 from backend.logger import logger
 from backend.config import config
+from backend.analytics.oi_analyzer import OIAnalyzer
 from pydantic import BaseModel
 
 class ConfigUpdateRequest(BaseModel):
@@ -217,6 +218,60 @@ async def get_futures_data(
         raise HTTPException(status_code=404, detail=f"Expiry '{expiry}' not found")
     except Exception as e:
         logger.error(f"Error fetching futures data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/oi-spikes")
+async def get_oi_spikes(
+    expiry: str = Query(..., description="Expiry folder name"),
+    threshold: float = Query(0.5, description="OI Spike threshold (0.5 = 50%)"),
+    vol_threshold: float = Query(0.5, description="Volume Spike threshold (0.5 = 50%)"),
+    min_ltp: float = Query(0.0, description="Minimum LTP Filter"),
+    use_unified: Optional[bool] = Query(None),
+):
+    """
+    Detect sudden increases in OI or Volume for the entire expiry dataset.
+    """
+    import time
+    start = time.time()
+    logger.info(f"Detecting market spikes for expiry={expiry}, threshold={threshold}, vol_threshold={vol_threshold}, min_ltp={min_ltp}")
+    try:
+        # Load the entire options dataset
+        load_start = time.time()
+        df = data_loader.load_options(expiry, use_unified=use_unified)
+        load_end = time.time()
+        logger.info(f"Loaded {len(df)} rows in {load_end - load_start:.2f}s")
+        
+        if df.is_empty():
+            return {"expiry": expiry, "total_spikes": 0, "spikes": [], "load_time_s": load_end - load_start}
+
+        # Analyze spikes
+        analyze_start = time.time()
+        spikes = OIAnalyzer.detect_spikes(
+            df, 
+            oi_threshold=threshold, 
+            vol_threshold=vol_threshold,
+            min_ltp=min_ltp
+        )
+        analyze_end = time.time()
+        logger.info(f"Analyzed spikes in {analyze_end - analyze_start:.2f}s, found {len(spikes)}")
+        
+        return {
+            "expiry": expiry,
+            "oi_threshold": threshold,
+            "vol_threshold": vol_threshold,
+            "min_ltp": min_ltp,
+            "total_spikes": len(spikes),
+            "spikes": spikes,
+            "stats": {
+                "rows_scanned": len(df),
+                "load_time_s": round(load_end - load_start, 2),
+                "analyze_time_s": round(analyze_end - analyze_start, 2),
+                "total_time_s": round(time.time() - start, 2)
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error calculating OI spikes: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
