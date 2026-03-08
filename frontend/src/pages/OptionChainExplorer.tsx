@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { createChart, ColorType, CrosshairMode, CandlestickSeries } from 'lightweight-charts';
 import { dataApi, aiApi } from '../api/client';
 import { useDataStore } from '../stores/appStore';
 import ReactMarkdown from 'react-markdown';
@@ -34,6 +35,13 @@ export default function OptionChainExplorer() {
     const [timestamps, setTimestamps] = useState<string[]>([]);
     const [currentIndex, setCurrentIndex] = useState(0);
     const [stepMinutes, setStepMinutes] = useState(5);
+    const [isPlaying, setIsPlaying] = useState(false);
+
+    // Chart Refs
+    const chartContainerRef = useRef<HTMLDivElement>(null);
+    const chartRef = useRef<any>(null);
+    const seriesRef = useRef<any>(null);
+    const priceLinesRef = useRef<any[]>([]);
 
     // New States for Spot and Futures
     const [indexData, setIndexLocalData] = useState<any[]>([]);
@@ -261,6 +269,142 @@ export default function OptionChainExplorer() {
 
     const strikes = [...new Set(filteredChain.map((r: any) => r.Strike))].sort((a, b) => a - b);
 
+    // Auto Playback Effect
+    useEffect(() => {
+        let interval: any;
+        if (isPlaying && currentIndex < timestamps.length - 1) {
+            interval = setInterval(() => {
+                handleStepForward();
+            }, 1000); // 1.0 second per step
+        } else if (currentIndex >= timestamps.length - 1) {
+            setIsPlaying(false);
+        }
+        return () => clearInterval(interval);
+    }, [isPlaying, currentIndex, timestamps, stepMinutes]);
+
+    // Top 3 OI Strikes Calculation
+    const topOiStrikes = useMemo(() => {
+        if (!currentTimestamp || filteredChain.length === 0) return [];
+
+        // Group by strike and sum CE + PE OI
+        const strikeOiMap = new Map<number, number>();
+        filteredChain.forEach((r: any) => {
+            const currentOi = strikeOiMap.get(r.Strike) || 0;
+            strikeOiMap.set(r.Strike, currentOi + (r.OI || 0));
+        });
+
+        // Sort strikes by descending OI and take top 3
+        return Array.from(strikeOiMap.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 3)
+            .map(entry => entry[0]);
+    }, [filteredChain, currentTimestamp]);
+
+    // Candlestick Chart Initialization
+    useEffect(() => {
+        if (!chartContainerRef.current || indexData.length === 0) return;
+
+        const handleResize = () => {
+            if (chartContainerRef.current && chartRef.current) {
+                chartRef.current.applyOptions({ width: chartContainerRef.current.clientWidth });
+            }
+        };
+
+        if (!chartRef.current) {
+            const chart = createChart(chartContainerRef.current, {
+                width: chartContainerRef.current.clientWidth,
+                height: 350,
+                layout: {
+                    background: { type: ColorType.Solid, color: 'transparent' },
+                    textColor: '#d1d5db',
+                },
+                grid: {
+                    vertLines: { color: 'rgba(255, 255, 255, 0.05)' },
+                    horzLines: { color: 'rgba(255, 255, 255, 0.05)' },
+                },
+                crosshair: { mode: CrosshairMode.Normal },
+                timeScale: { timeVisible: true, secondsVisible: false }
+            });
+
+            const candlestickSeries = chart.addSeries(CandlestickSeries, {
+                upColor: '#26a69a',
+                downColor: '#ef5350',
+                borderVisible: false,
+                wickUpColor: '#26a69a',
+                wickDownColor: '#ef5350',
+            });
+
+            // Convert data format
+            const chartData = indexData.map(d => {
+                // Parse "DD/MM/YYYY HH:MM:SS"
+                const parts = d.Date.split(' ');
+                const dateParts = parts[0].split('/');
+                const timeParts = parts[1] ? parts[1].split(':') : ['00', '00', '00'];
+                const ts = Date.UTC(
+                    parseInt(dateParts[2]), parseInt(dateParts[1]) - 1, parseInt(dateParts[0]),
+                    parseInt(timeParts[0]), parseInt(timeParts[1]), parseInt(timeParts[2])
+                ) / 1000;
+
+                return {
+                    time: ts as any,
+                    open: d.Open || d.Close,
+                    high: d.High || d.Close,
+                    low: d.Low || d.Close,
+                    close: d.Close
+                };
+            }).sort((a, b) => a.time - b.time);
+
+            candlestickSeries.setData(chartData);
+
+            chartRef.current = chart;
+            seriesRef.current = candlestickSeries;
+
+            window.addEventListener('resize', handleResize);
+        }
+
+        return () => {
+            if (chartRef.current) {
+                window.removeEventListener('resize', handleResize);
+                chartRef.current.remove();
+                chartRef.current = null;
+                seriesRef.current = null;
+            }
+        };
+    }, [indexData]);
+
+    // Update Top OI Lines and Crosshair when current timestamp changes
+    useEffect(() => {
+        if (!seriesRef.current || !chartRef.current || indexData.length === 0 || !currentTimestamp) return;
+
+        // Clear existing lines
+        priceLinesRef.current.forEach(line => seriesRef.current.removePriceLine(line));
+        priceLinesRef.current = [];
+
+        // Add Top 3 OI Lines
+        const colors = ['rgba(239, 68, 68, 0.7)', 'rgba(59, 130, 246, 0.7)', 'rgba(168, 85, 247, 0.7)'];
+        topOiStrikes.forEach((strike, idx) => {
+            const line = seriesRef.current.createPriceLine({
+                price: strike,
+                color: colors[idx % colors.length],
+                lineWidth: 2,
+                lineStyle: 2, // Dashed
+                axisLabelVisible: true,
+                title: `Top ${idx + 1} OI`,
+            });
+            priceLinesRef.current.push(line);
+        });
+
+        // Set Crosshair to current timestamp
+        // Parse "DD/MM/YYYY HH:MM:SS"
+        const parts = currentTimestamp.split(' ');
+        if (parts.length >= 2) {
+            // Move crosshair programmatically is tricky in LW Charts,
+            // so we'll just ensure the current candle is visible.
+            chartRef.current.timeScale().scrollToPosition(0, true);
+        }
+
+    }, [currentIndex, topOiStrikes, currentTimestamp, indexData]);
+
     // Calculate closest strikes for highlighting
     const getClosestStrike = (val: number | undefined) => {
         if (!val || strikes.length === 0) return null;
@@ -452,6 +596,42 @@ export default function OptionChainExplorer() {
                             </div>
                         </div>
                     </div>
+                </div>
+            )}
+
+            {/* Nifty Index Chart with Top OI */}
+            {selectedExpiry && timestamps.length > 0 && (
+                <div className="card fade-in" style={{ marginBottom: 16 }}>
+                    <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div className="card-title" onClick={() => setIsChartCollapsed(!isChartCollapsed)} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span>{isChartCollapsed ? '▶' : '▼'}</span>
+                            Nifty Index & Top OI Levels
+                        </div>
+                        <button
+                            className={`btn ${isPlaying ? 'btn-danger' : 'btn-primary'}`}
+                            onClick={() => setIsPlaying(!isPlaying)}
+                            disabled={loading || stepping || indexData.length === 0}
+                            style={{
+                                padding: '4px 12px',
+                                background: isPlaying ? 'rgba(239, 68, 68, 0.2)' : 'var(--bg-input)',
+                                color: isPlaying ? 'var(--red)' : 'var(--text-color)',
+                                border: `1px solid ${isPlaying ? 'var(--red)' : 'var(--border-color)'}`
+                            }}
+                        >
+                            {isPlaying ? '⏸ Pause Auto-Play' : '▶ Auto-Play Forward'}
+                        </button>
+                    </div>
+                    {!isChartCollapsed && (
+                        <div style={{ padding: 16, borderTop: '1px solid var(--border-color)', position: 'relative' }}>
+                            {indexData.length === 0 ? (
+                                <div style={{ height: 350, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
+                                    Loading Index Data...
+                                </div>
+                            ) : (
+                                <div ref={chartContainerRef} style={{ width: '100%', height: 350 }} />
+                            )}
+                        </div>
+                    )}
                 </div>
             )}
 
