@@ -461,26 +461,28 @@ export default function OptionChainExplorer() {
 
         // Add Top Call OI Resistance Lines (Green)
         topCallOiStrikes.forEach((strike, idx) => {
+            const isMax = idx === 0;
             const line = seriesRef.current.createPriceLine({
                 price: strike,
                 color: 'rgba(16, 185, 129, 0.7)', // Green
-                lineWidth: 2,
+                lineWidth: isMax ? 4 : 2,
                 lineStyle: 1, // Solid
                 axisLabelVisible: true,
-                title: `Call OI R${idx + 1}`,
+                title: `Call OI R${idx + 1}${isMax ? ' [MAX]' : ''}`,
             });
             priceLinesRef.current.push(line);
         });
 
         // Add Top Put OI Support Lines (Red)
         topPutOiStrikes.forEach((strike, idx) => {
+            const isMax = idx === 0;
             const line = seriesRef.current.createPriceLine({
                 price: strike,
                 color: 'rgba(239, 68, 68, 0.7)', // Red
-                lineWidth: 2,
+                lineWidth: isMax ? 4 : 2,
                 lineStyle: 2, // Dashed
                 axisLabelVisible: true,
-                title: `Put OI S${idx + 1}`,
+                title: `Put OI S${idx + 1}${isMax ? ' [MAX]' : ''}`,
             });
             priceLinesRef.current.push(line);
         });
