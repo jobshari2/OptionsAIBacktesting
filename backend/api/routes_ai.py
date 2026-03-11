@@ -57,6 +57,7 @@ class AnalyzeChainRequest(BaseModel):
     futures_price: float
     option_chain: List[Dict[str, Any]]
     spikes: List[Dict[str, Any]]
+    timestamp: Optional[str] = None
     model_name: Optional[str] = "gemini-1.5-flash"
 
 
@@ -147,6 +148,7 @@ Market Data Snapshot:
 - Expiry: {request.expiry}
 - Spot Price: {request.spot_price}
 - Futures Price: {request.futures_price}
+- Data Timestamp: {request.timestamp or 'Latest Available'}
 
 Recent Market Anomalies/Spikes (OI and Volume):
 {str(request.spikes[:50])}  # Showing top recent anomalies

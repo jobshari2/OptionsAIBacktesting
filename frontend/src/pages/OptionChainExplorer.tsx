@@ -30,6 +30,7 @@ export default function OptionChainExplorer() {
     const [isAiCollapsed, setIsAiCollapsed] = useState(false);
     const [aiModels, setAiModels] = useState<any[]>([]);
     const [selectedAiModel, setSelectedAiModel] = useState('gemini-1.5-flash');
+    const [aiAnalysisTimestamp, setAiAnalysisTimestamp] = useState<string | null>(null);
 
     // New States for Time Stepper
     const [timestamps, setTimestamps] = useState<string[]>([]);
@@ -434,11 +435,13 @@ export default function OptionChainExplorer() {
                 futures_price: currentFuture || 0,
                 option_chain: subsetChain,
                 spikes: oiSpikes.slice(0, 50),
+                timestamp: currentTimestamp,
                 model_name: selectedAiModel
             };
 
             const res = await aiApi.analyzeChain(payload);
             setAiResult(res.analysis);
+            setAiAnalysisTimestamp(currentTimestamp);
             setIsAiCollapsed(false);
         } catch (e: any) {
             console.error("AI Error:", e);
@@ -503,16 +506,17 @@ export default function OptionChainExplorer() {
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
-                    background: 'var(--bg-body)',
-                    border: stepping ? '1px solid var(--green)' : '1px solid var(--blue)',
-                    transition: 'border-color 0.2s'
+                    background: 'var(--bg-secondary)',
+                    border: stepping ? '1px solid var(--green)' : '1px solid var(--accent-primary)',
+                    transition: 'border-color 0.2s',
+                    padding: '12px 20px'
                 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <button
                             className="btn"
                             onClick={handlePrevDay}
                             disabled={loading || stepping || currentIndex === 0}
-                            style={{ background: 'var(--bg-input)', padding: '6px 10px' }}
+                            style={{ background: 'var(--bg-card)', padding: '6px 12px', color: 'var(--text-primary)', border: '1px solid var(--border-color)' }}
                             title="Previous Day"
                         >
                             &laquo;&laquo; Prev Day
@@ -521,13 +525,13 @@ export default function OptionChainExplorer() {
                             className="btn"
                             onClick={handleStepBackward}
                             disabled={loading || stepping || currentIndex === 0}
-                            style={{ background: 'var(--bg-input)', padding: '6px 12px' }}
+                            style={{ background: 'var(--bg-card)', padding: '6px 12px', color: 'var(--text-primary)', border: '1px solid var(--border-color)' }}
                         >
                             &laquo; Back
                         </button>
 
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', margin: '0 4px' }}>
-                            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Mins:</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '0 8px' }}>
+                            <span style={{ fontSize: '12px', color: 'var(--text-primary)', fontWeight: 600 }}>Mins:</span>
                             <input
                                 type="number"
                                 className="form-input"
@@ -543,7 +547,7 @@ export default function OptionChainExplorer() {
                             className="btn"
                             onClick={handleStepForward}
                             disabled={loading || stepping || currentIndex === timestamps.length - 1}
-                            style={{ background: 'var(--bg-input)', padding: '6px 12px' }}
+                            style={{ background: 'var(--bg-card)', padding: '6px 12px', color: 'var(--text-primary)', border: '1px solid var(--border-color)' }}
                         >
                             Next &raquo;
                         </button>
@@ -551,7 +555,7 @@ export default function OptionChainExplorer() {
                             className="btn"
                             onClick={handleNextDay}
                             disabled={loading || stepping || currentIndex === timestamps.length - 1}
-                            style={{ background: 'var(--bg-input)', padding: '6px 10px' }}
+                            style={{ background: 'var(--bg-card)', padding: '6px 12px', color: 'var(--text-primary)', border: '1px solid var(--border-color)' }}
                             title="Next Day"
                         >
                             Next Day &raquo;&raquo;
@@ -577,7 +581,7 @@ export default function OptionChainExplorer() {
                         <div style={{ width: '1px', height: '30px', background: 'var(--border-color)' }}></div>
                         <div style={{ textAlign: 'right' }}>
                             <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Current Time</div>
-                            <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--blue)' }}>
+                            <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--accent-primary)' }}>
                                 {currentTimestamp.split(' ')[1] || '---'}
                             </div>
                         </div>
@@ -684,6 +688,12 @@ export default function OptionChainExplorer() {
 
                     {!isAiCollapsed && (aiResult || aiError || aiLoading) && (
                         <div style={{ padding: '20px', background: 'var(--bg-body)', borderTop: '1px solid var(--border-color)', fontSize: 14, lineHeight: 1.6 }}>
+                            {aiAnalysisTimestamp && !aiLoading && (
+                                <div style={{ marginBottom: 16, fontSize: 12, color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)', paddingBottom: 8, display: 'flex', justifyContent: 'space-between' }}>
+                                    <span>Analysis for: <strong>{aiAnalysisTimestamp}</strong></span>
+                                    <span>Model: <strong>{selectedAiModel}</strong></span>
+                                </div>
+                            )}
                             {aiError && <div style={{ color: 'var(--red)', padding: 12, background: 'rgba(239,68,68,0.1)', borderRadius: 6 }}>{aiError}</div>}
                             {aiLoading && !aiResult && (
                                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: 40, color: 'var(--text-muted)' }}>
