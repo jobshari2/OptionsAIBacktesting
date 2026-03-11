@@ -31,6 +31,7 @@ export default function OptionChainExplorer() {
     const [aiModels, setAiModels] = useState<any[]>([]);
     const [selectedAiModel, setSelectedAiModel] = useState('gemini-1.5-flash');
     const [aiAnalysisTimestamp, setAiAnalysisTimestamp] = useState<string | null>(null);
+    const [isAdvisorCollapsed, setIsAdvisorCollapsed] = useState(false);
 
     // New States for Time Stepper
     const [timestamps, setTimestamps] = useState<string[]>([]);
@@ -270,8 +271,27 @@ export default function OptionChainExplorer() {
 
     // Derived values for the current timestamp
     const currentTimestamp = timestamps[currentIndex] || '';
-    const currentSpot = indexData.find(d => d.Date === currentTimestamp)?.Close;
-    const currentFuture = futuresData.find(d => d.Date === currentTimestamp)?.Close;
+    
+    // Improved spot/future lookup (more robust than exact string match)
+    const { currentSpot, currentFuture } = useMemo(() => {
+        if (!currentTimestamp || (indexData.length === 0 && futuresData.length === 0)) {
+            return { currentSpot: undefined, currentFuture: undefined };
+        }
+        
+        const targetUnix = parseTimestamp(currentTimestamp);
+        
+        // Find exact or closest preceding data point
+        const spotPt = indexData.find(d => parseTimestamp(d.Date) === targetUnix) || 
+                      indexData.find(d => Math.abs(parseTimestamp(d.Date) - targetUnix) < 60);
+        
+        const futPt = futuresData.find(d => parseTimestamp(d.Date) === targetUnix) ||
+                      futuresData.find(d => Math.abs(parseTimestamp(d.Date) - targetUnix) < 60);
+
+        return {
+            currentSpot: spotPt?.Close,
+            currentFuture: futPt?.Close
+        };
+    }, [currentTimestamp, indexData, futuresData]);
 
     const filteredChain = optionChain.filter((row: any) => {
         if (!showCE && row.Right === 'CE') return false;
@@ -307,6 +327,55 @@ export default function OptionChainExplorer() {
             topPutOiStrikes: peStrikes.slice(0, 3).map(r => r.Strike)
         };
     }, [filteredChain, currentTimestamp]);
+
+    // Strategy Advisor Logic
+    const advisorSignal = useMemo(() => {
+        if (!currentSpot || topCallOiStrikes.length === 0 || topPutOiStrikes.length === 0) return null;
+
+        const R1 = topCallOiStrikes[0];
+        const S1 = topPutOiStrikes[0];
+        const spot = currentSpot;
+
+        // Threshold for "Inside Zone" (e.g., 0.2% of spot)
+        const zoneThreshold = spot * 0.002;
+
+        if (spot > R1 + zoneThreshold) {
+            return {
+                stance: 'Strong Bullish',
+                strategy: 'Bull Call Spread / Naked Long',
+                reason: `Spot has broken above major Resistance (R1: ${R1}). Momentum likely to continue.`,
+                color: 'var(--green)'
+            };
+        } else if (spot < S1 - zoneThreshold) {
+            return {
+                stance: 'Strong Bearish',
+                strategy: 'Bear Put Spread / Naked Short',
+                reason: `Spot has broken below major Support (S1: ${S1}). Bearish trap confirmed.`,
+                color: 'var(--red)'
+            };
+        } else if (Math.abs(spot - S1) <= zoneThreshold) {
+            return {
+                stance: 'Buying at Support',
+                strategy: 'Bull Put Spread / PCS',
+                reason: `Spot is at major Support (S1: ${S1}). High probability of reversal or bounce.`,
+                color: 'var(--cyan)'
+            };
+        } else if (Math.abs(spot - R1) <= zoneThreshold) {
+            return {
+                stance: 'Selling at Resistance',
+                strategy: 'Bear Call Spread / CCS',
+                reason: `Spot is at major Resistance (R1: ${R1}). Selling pressure expected here.`,
+                color: 'var(--orange)'
+            };
+        } else {
+            return {
+                stance: 'Rangebound',
+                strategy: 'Iron Condor / Strangle',
+                reason: `Spot is trading between S1 (${S1}) and R1 (${R1}). Low volatility play.`,
+                color: 'var(--blue)'
+            };
+        }
+    }, [currentSpot, topCallOiStrikes, topPutOiStrikes]);
 
     // Candlestick Chart Initialization
     useEffect(() => {
@@ -1058,6 +1127,83 @@ export default function OptionChainExplorer() {
                 </div>
             )
             }
+            {/* Global Strategy Advisor Overlay */}
+            {advisorSignal && !isAdvisorCollapsed && (
+                <div className="fade-in" style={{
+                    position: 'fixed',
+                    top: 20,
+                    right: 20,
+                    width: 280,
+                    background: 'rgba(15, 23, 42, 0.95)',
+                    backdropFilter: 'blur(12px)',
+                    border: `1px solid ${advisorSignal.color}`,
+                    borderRadius: '16px',
+                    padding: '16px',
+                    zIndex: 2000,
+                    boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+                    transition: 'all 0.3s ease'
+                }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                        <div style={{ fontSize: 10, textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 800, letterSpacing: '1px' }}>
+                            Strategy Advisor
+                        </div>
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); setIsAdvisorCollapsed(true); }}
+                            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 18, color: 'var(--text-muted)' }}
+                        >
+                            ×
+                        </button>
+                    </div>
+                    <div style={{ fontSize: 18, fontWeight: 800, color: advisorSignal.color, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: advisorSignal.color, boxShadow: `0 0 10px ${advisorSignal.color}` }} />
+                        {advisorSignal.stance}
+                    </div>
+                    <div style={{ marginBottom: 16 }}>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, fontWeight: 600 }}>Action Plan:</div>
+                        <div style={{ 
+                            fontSize: 14, 
+                            fontWeight: 700, 
+                            color: 'var(--text-strong)', 
+                            background: 'rgba(255,255,255,0.05)', 
+                            padding: '8px 12px', 
+                            borderRadius: '8px',
+                            border: '1px solid rgba(255,255,255,0.1)'
+                        }}>
+                            {advisorSignal.strategy}
+                        </div>
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5, background: 'rgba(0,0,0,0.2)', padding: '10px', borderRadius: '8px' }}>
+                        {advisorSignal.reason}
+                    </div>
+                </div>
+            )}
+            
+            {/* Minimized Advisor Button */}
+            {advisorSignal && isAdvisorCollapsed && (
+                <div 
+                    onClick={() => setIsAdvisorCollapsed(false)}
+                    style={{
+                        position: 'fixed',
+                        top: 20,
+                        right: 20,
+                        padding: '10px 16px',
+                        background: advisorSignal.color,
+                        color: advisorSignal.color === 'var(--red)' ? '#fff' : '#000',
+                        borderRadius: '30px',
+                        fontWeight: 700,
+                        fontSize: 12,
+                        cursor: 'pointer',
+                        zIndex: 2000,
+                        boxShadow: '0 10px 15px rgba(0,0,0,0.3)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        border: '2px solid rgba(255,255,255,0.2)'
+                    }}
+                >
+                    💡 Advisor: {advisorSignal.stance}
+                </div>
+            )}
         </div >
     );
 }
