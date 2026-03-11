@@ -48,6 +48,18 @@ export default function OptionChainExplorer() {
     const [indexData, setIndexLocalData] = useState<any[]>([]);
     const [futuresData, setFuturesLocalData] = useState<any[]>([]);
 
+    // Helper to parse "DD/MM/YYYY HH:MM:SS" to Unix Timestamp (seconds)
+    const parseTimestamp = (ts: string) => {
+        if (!ts) return 0;
+        const parts = ts.split(' ');
+        const dateParts = parts[0].split('/');
+        const timeParts = parts[1] ? parts[1].split(':') : ['00', '00', '00'];
+        return Date.UTC(
+            parseInt(dateParts[2]), parseInt(dateParts[1]) - 1, parseInt(dateParts[0]),
+            parseInt(timeParts[0]), parseInt(timeParts[1]), parseInt(timeParts[2])
+        ) / 1000;
+    };
+
     useEffect(() => {
         loadExpiries();
         loadAiModels();
@@ -149,12 +161,12 @@ export default function OptionChainExplorer() {
     const handleStepBackward = () => {
         if (timestamps.length === 0 || currentIndex === 0) return;
 
-        let targetMs = new Date(timestamps[currentIndex]).getTime() - (stepMinutes * 60000);
+        let targetUnix = parseTimestamp(timestamps[currentIndex]) - (stepMinutes * 60);
 
         // Find closest timestamp before or exact
         let newIdx = currentIndex;
         for (let i = currentIndex - 1; i >= 0; i--) {
-            if (new Date(timestamps[i]).getTime() <= targetMs) {
+            if (parseTimestamp(timestamps[i]) <= targetUnix) {
                 newIdx = i;
                 break;
             }
@@ -169,12 +181,12 @@ export default function OptionChainExplorer() {
     const handleStepForward = () => {
         if (timestamps.length === 0 || currentIndex === timestamps.length - 1) return;
 
-        let targetMs = new Date(timestamps[currentIndex]).getTime() + (stepMinutes * 60000);
+        let targetUnix = parseTimestamp(timestamps[currentIndex]) + (stepMinutes * 60);
 
         // Find closest timestamp after or exact
         let newIdx = currentIndex;
         for (let i = currentIndex + 1; i < timestamps.length; i++) {
-            if (new Date(timestamps[i]).getTime() >= targetMs) {
+            if (parseTimestamp(timestamps[i]) >= targetUnix) {
                 newIdx = i;
                 break;
             }
@@ -283,22 +295,17 @@ export default function OptionChainExplorer() {
         return () => clearInterval(interval);
     }, [isPlaying, currentIndex, timestamps, stepMinutes]);
 
-    // Top 3 OI Strikes Calculation
-    const topOiStrikes = useMemo(() => {
-        if (!currentTimestamp || filteredChain.length === 0) return [];
+    // Top OI Strikes Calculation (Separated for Call and Put)
+    const { topCallOiStrikes, topPutOiStrikes } = useMemo(() => {
+        if (!currentTimestamp || filteredChain.length === 0) return { topCallOiStrikes: [], topPutOiStrikes: [] };
 
-        // Group by strike and sum CE + PE OI
-        const strikeOiMap = new Map<number, number>();
-        filteredChain.forEach((r: any) => {
-            const currentOi = strikeOiMap.get(r.Strike) || 0;
-            strikeOiMap.set(r.Strike, currentOi + (r.OI || 0));
-        });
+        const ceStrikes = filteredChain.filter((r: any) => r.Right === 'CE').sort((a, b) => (b.OI || 0) - (a.OI || 0));
+        const peStrikes = filteredChain.filter((r: any) => r.Right === 'PE').sort((a, b) => (b.OI || 0) - (a.OI || 0));
 
-        // Sort strikes by descending OI and take top 3
-        return Array.from(strikeOiMap.entries())
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 3)
-            .map(entry => entry[0]);
+        return {
+            topCallOiStrikes: ceStrikes.slice(0, 3).map(r => r.Strike),
+            topPutOiStrikes: peStrikes.slice(0, 3).map(r => r.Strike)
+        };
     }, [filteredChain, currentTimestamp]);
 
     // Candlestick Chart Initialization
@@ -335,28 +342,6 @@ export default function OptionChainExplorer() {
                 wickDownColor: '#ef5350',
             });
 
-            // Convert data format
-            const chartData = indexData.map(d => {
-                // Parse "DD/MM/YYYY HH:MM:SS"
-                const parts = d.Date.split(' ');
-                const dateParts = parts[0].split('/');
-                const timeParts = parts[1] ? parts[1].split(':') : ['00', '00', '00'];
-                const ts = Date.UTC(
-                    parseInt(dateParts[2]), parseInt(dateParts[1]) - 1, parseInt(dateParts[0]),
-                    parseInt(timeParts[0]), parseInt(timeParts[1]), parseInt(timeParts[2])
-                ) / 1000;
-
-                return {
-                    time: ts as any,
-                    open: d.Open || d.Close,
-                    high: d.High || d.Close,
-                    low: d.Low || d.Close,
-                    close: d.Close
-                };
-            }).sort((a, b) => a.time - b.time);
-
-            candlestickSeries.setData(chartData);
-
             chartRef.current = chart;
             seriesRef.current = candlestickSeries;
 
@@ -373,6 +358,30 @@ export default function OptionChainExplorer() {
         };
     }, [indexData]);
 
+    // Effect to update chart data based on current index selection
+    useEffect(() => {
+        if (!seriesRef.current || indexData.length === 0 || !currentTimestamp) return;
+
+        const currentUnix = parseTimestamp(currentTimestamp);
+
+        // Filter index data up to current timestamp
+        const filteredData = indexData
+            .map(d => {
+                const ts = parseTimestamp(d.Date);
+                return {
+                    time: ts as any,
+                    open: d.Open || d.Close,
+                    high: d.High || d.Close,
+                    low: d.Low || d.Close,
+                    close: d.Close
+                };
+            })
+            .filter(d => d.time <= currentUnix)
+            .sort((a, b) => a.time - b.time);
+
+        seriesRef.current.setData(filteredData);
+    }, [indexData, currentTimestamp]);
+
     // Update Top OI Lines and Crosshair when current timestamp changes
     useEffect(() => {
         if (!seriesRef.current || !chartRef.current || indexData.length === 0 || !currentTimestamp) return;
@@ -381,16 +390,28 @@ export default function OptionChainExplorer() {
         priceLinesRef.current.forEach(line => seriesRef.current.removePriceLine(line));
         priceLinesRef.current = [];
 
-        // Add Top 3 OI Lines
-        const colors = ['rgba(239, 68, 68, 0.7)', 'rgba(59, 130, 246, 0.7)', 'rgba(168, 85, 247, 0.7)'];
-        topOiStrikes.forEach((strike, idx) => {
+        // Add Top Call OI Resistance Lines (Green)
+        topCallOiStrikes.forEach((strike, idx) => {
             const line = seriesRef.current.createPriceLine({
                 price: strike,
-                color: colors[idx % colors.length],
+                color: 'rgba(16, 185, 129, 0.7)', // Green
+                lineWidth: 2,
+                lineStyle: 1, // Solid
+                axisLabelVisible: true,
+                title: `Call OI R${idx + 1}`,
+            });
+            priceLinesRef.current.push(line);
+        });
+
+        // Add Top Put OI Support Lines (Red)
+        topPutOiStrikes.forEach((strike, idx) => {
+            const line = seriesRef.current.createPriceLine({
+                price: strike,
+                color: 'rgba(239, 68, 68, 0.7)', // Red
                 lineWidth: 2,
                 lineStyle: 2, // Dashed
                 axisLabelVisible: true,
-                title: `Top ${idx + 1} OI`,
+                title: `Put OI S${idx + 1}`,
             });
             priceLinesRef.current.push(line);
         });
@@ -404,7 +425,7 @@ export default function OptionChainExplorer() {
             chartRef.current.timeScale().scrollToPosition(0, true);
         }
 
-    }, [currentIndex, topOiStrikes, currentTimestamp, indexData]);
+    }, [currentIndex, topCallOiStrikes, topPutOiStrikes, currentTimestamp, indexData]);
 
     // Calculate closest strikes for highlighting
     const getClosestStrike = (val: number | undefined) => {
@@ -603,41 +624,83 @@ export default function OptionChainExplorer() {
                 </div>
             )}
 
-            {/* Nifty Index Chart with Top OI */}
-            {selectedExpiry && timestamps.length > 0 && (
-                <div className="card fade-in" style={{ marginBottom: 16 }}>
-                    <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div className="card-title" onClick={() => setIsChartCollapsed(!isChartCollapsed)} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <span>{isChartCollapsed ? '▶' : '▼'}</span>
-                            Nifty Index & Top OI Levels
+                <div className="grid-2" style={{ marginBottom: 16 }}>
+                    {/* Nifty Index Chart with Top OI */}
+                    <div className="card fade-in" style={{ margin: 0 }}>
+                        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div className="card-title" onClick={() => setIsChartCollapsed(!isChartCollapsed)} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span>{isChartCollapsed ? '▶' : '▼'}</span>
+                                Nifty Index & Top OI Levels
+                            </div>
+                            <button
+                                className={`btn ${isPlaying ? 'btn-danger' : 'btn-primary'}`}
+                                onClick={() => setIsPlaying(!isPlaying)}
+                                disabled={loading || stepping || indexData.length === 0}
+                                style={{
+                                    padding: '4px 12px',
+                                    background: isPlaying ? 'rgba(239, 68, 68, 0.2)' : 'var(--bg-input)',
+                                    color: isPlaying ? 'var(--red)' : 'var(--text-color)',
+                                    border: `1px solid ${isPlaying ? 'var(--red)' : 'var(--border-color)'}`
+                                }}
+                            >
+                                {isPlaying ? '⏸' : '▶'}
+                            </button>
                         </div>
-                        <button
-                            className={`btn ${isPlaying ? 'btn-danger' : 'btn-primary'}`}
-                            onClick={() => setIsPlaying(!isPlaying)}
-                            disabled={loading || stepping || indexData.length === 0}
-                            style={{
-                                padding: '4px 12px',
-                                background: isPlaying ? 'rgba(239, 68, 68, 0.2)' : 'var(--bg-input)',
-                                color: isPlaying ? 'var(--red)' : 'var(--text-color)',
-                                border: `1px solid ${isPlaying ? 'var(--red)' : 'var(--border-color)'}`
-                            }}
-                        >
-                            {isPlaying ? '⏸ Pause Auto-Play' : '▶ Auto-Play Forward'}
-                        </button>
+                        {!isChartCollapsed && (
+                            <div style={{ padding: 16, borderTop: '1px solid var(--border-color)', position: 'relative' }}>
+                                {indexData.length === 0 ? (
+                                    <div style={{ height: 350, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
+                                        Loading Index Data...
+                                    </div>
+                                ) : (
+                                    <div ref={chartContainerRef} style={{ width: '100%', height: 350 }} />
+                                )}
+                            </div>
+                        )}
                     </div>
-                    {!isChartCollapsed && (
-                        <div style={{ padding: 16, borderTop: '1px solid var(--border-color)', position: 'relative' }}>
-                            {indexData.length === 0 ? (
-                                <div style={{ height: 350, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
-                                    Loading Index Data...
-                                </div>
-                            ) : (
-                                <div ref={chartContainerRef} style={{ width: '100%', height: 350 }} />
-                            )}
+
+                    {/* OI Buildup Chart */}
+                    <div className="card fade-in" style={{ margin: 0 }}>
+                        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div className="card-title" onClick={() => setIsChartCollapsed(!isChartCollapsed)} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span>{isChartCollapsed ? '▶' : '▼'}</span>
+                                OI Buildup (Open Interest)
+                            </div>
                         </div>
-                    )}
+                        {!isChartCollapsed && (
+                            <div style={{ height: 350, width: '100%', padding: '10px 0' }}>
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <BarChart data={oiData} margin={{ top: 10, right: 30, left: 20, bottom: 20 }}>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
+                                        <XAxis
+                                            dataKey="strike"
+                                            stroke="var(--text-muted)"
+                                            fontSize={10}
+                                            tickLine={false}
+                                            axisLine={false}
+                                            dy={10}
+                                        />
+                                        <YAxis
+                                            stroke="var(--text-muted)"
+                                            fontSize={10}
+                                            tickLine={false}
+                                            axisLine={false}
+                                            tickFormatter={(val) => val >= 1000000 ? `${(val / 1000000).toFixed(1)}M` : val >= 1000 ? `${(val / 1000).toFixed(0)}k` : val}
+                                        />
+                                        <Tooltip
+                                            contentStyle={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)', borderRadius: '8px', color: 'var(--text-body)' }}
+                                            itemStyle={{ fontSize: '11px' }}
+                                            formatter={(val: any) => val.toLocaleString()}
+                                        />
+                                        <Legend wrapperStyle={{ paddingTop: '10px', fontSize: '11px' }} />
+                                        <Bar dataKey="ce_oi" name="Call OI" fill="var(--green)" radius={[4, 4, 0, 0]} opacity={0.8} />
+                                        <Bar dataKey="pe_oi" name="Put OI" fill="var(--red)" radius={[4, 4, 0, 0]} opacity={0.8} />
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            </div>
+                        )}
+                    </div>
                 </div>
-            )}
 
             {/* AI Insights Card */}
             {selectedExpiry && timestamps.length > 0 && (
@@ -822,48 +885,6 @@ export default function OptionChainExplorer() {
                         )}
                     </div>
 
-                    {/* OI Buildup Chart */}
-                    <div className="card fade-in" style={{ marginBottom: 16 }}>
-                        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <div className="card-title" onClick={() => setIsChartCollapsed(!isChartCollapsed)} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-                                <span>{isChartCollapsed ? '▶' : '▼'}</span>
-                                OI Buildup (Open Interest)
-                            </div>
-                        </div>
-                        {!isChartCollapsed && (
-                            <div style={{ height: 400, width: '100%', padding: '20px 0' }}>
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <BarChart data={oiData} margin={{ top: 10, right: 30, left: 20, bottom: 20 }}>
-                                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
-                                        <XAxis
-                                            dataKey="strike"
-                                            stroke="var(--text-muted)"
-                                            fontSize={11}
-                                            tickLine={false}
-                                            axisLine={false}
-                                            dy={10}
-                                            label={{ value: 'Strike Price', position: 'insideBottom', offset: -10, fontSize: 12, fill: 'var(--text-muted)' }}
-                                        />
-                                        <YAxis
-                                            stroke="var(--text-muted)"
-                                            fontSize={11}
-                                            tickLine={false}
-                                            axisLine={false}
-                                            tickFormatter={(val) => val >= 1000000 ? `${(val / 1000000).toFixed(1)}M` : val >= 1000 ? `${(val / 1000).toFixed(0)}k` : val}
-                                        />
-                                        <Tooltip
-                                            contentStyle={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)', borderRadius: '8px', color: 'var(--text-body)' }}
-                                            itemStyle={{ fontSize: '12px' }}
-                                            formatter={(val: any) => val.toLocaleString()}
-                                        />
-                                        <Legend wrapperStyle={{ paddingTop: '20px' }} />
-                                        <Bar dataKey="ce_oi" name="Call OI" fill="var(--green)" radius={[4, 4, 0, 0]} opacity={0.8} />
-                                        <Bar dataKey="pe_oi" name="Put OI" fill="var(--red)" radius={[4, 4, 0, 0]} opacity={0.8} />
-                                    </BarChart>
-                                </ResponsiveContainer>
-                            </div>
-                        )}
-                    </div>
 
                     {/* Sudden OI Spikes Table */}
                     <div className="card fade-in" style={{ marginBottom: 32 }}>

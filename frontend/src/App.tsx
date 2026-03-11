@@ -1,6 +1,6 @@
 import './index.css';
+import { useState, useEffect } from 'react';
 import { useUIStore, useDataStore } from './stores/appStore';
-import { useEffect } from 'react';
 import { dataApi } from './api/client';
 import Dashboard from './pages/Dashboard';
 import StrategyBuilder from './pages/StrategyBuilder';
@@ -33,6 +33,7 @@ const navItems = [
 function App() {
   const { activePage, setActivePage } = useUIStore();
   const { globalUseUnified, setGlobalUseUnified } = useDataStore();
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
   useEffect(() => {
     dataApi.getConfig()
@@ -88,7 +89,10 @@ function App() {
   return (
     <>
       {/* Sidebar */}
-      <aside className="sidebar">
+      <aside className={`sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`}>
+        <div className="sidebar-toggle" onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}>
+          {isSidebarCollapsed ? '→' : '←'}
+        </div>
         <div className="sidebar-logo">
           <div className="logo-icon">N</div>
           <div>
@@ -105,9 +109,10 @@ function App() {
                   key={item.id}
                   className={`nav-item ${activePage === item.id ? 'active' : ''}`}
                   onClick={() => setActivePage(item.id)}
+                  title={isSidebarCollapsed ? item.label : ''}
                 >
                   <span className="nav-icon">{item.icon}</span>
-                  {item.label}
+                  <span>{item.label}</span>
                 </div>
               ))}
             </div>
@@ -116,7 +121,7 @@ function App() {
       </aside>
 
       {/* Main Content */}
-      <main className="main-content">
+      <main className={`main-content ${isSidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
         <header className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
             <h2>{info.title}</h2>
