@@ -38,6 +38,7 @@ export default function OptionChainExplorer() {
     const [currentIndex, setCurrentIndex] = useState(0);
     const [stepMinutes, setStepMinutes] = useState(5);
     const [isPlaying, setIsPlaying] = useState(false);
+    const [trackedStrategy, setTrackedStrategy] = useState<any | null>(null);
 
     // Chart Refs
     const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -414,6 +415,7 @@ export default function OptionChainExplorer() {
         return maxPainStrike;
     }, [optionChain]);
 
+
     // Candlestick Chart Initialization
     useEffect(() => {
         if (!chartContainerRef.current || indexData.length === 0) return;
@@ -543,6 +545,113 @@ export default function OptionChainExplorer() {
 
     const closestSpotStrike = getClosestStrike(currentSpot);
     const closestFutureStrike = getClosestStrike(currentFuture);
+
+    // Helper to find strike at offset
+    const getStrikeAtOffset = (startStrike: number, offset: number) => {
+        if (strikes.length === 0) return startStrike;
+        const currentIdx = strikes.indexOf(startStrike);
+        if (currentIdx === -1) {
+            // Find closest index
+            const closest = strikes.reduce((prev, curr) => Math.abs(curr - startStrike) < Math.abs(prev - startStrike) ? curr : prev);
+            const closestIdx = strikes.indexOf(closest);
+            const targetIdx = Math.max(0, Math.min(strikes.length - 1, closestIdx + offset));
+            return strikes[targetIdx];
+        }
+        const targetIdx = Math.max(0, Math.min(strikes.length - 1, currentIdx + offset));
+        return strikes[targetIdx];
+    };
+
+    const recommendedStrategy = useMemo(() => {
+        if (!advisorSignal || !currentSpot || strikes.length === 0) return null;
+        
+        const atm = closestSpotStrike || strikes[Math.floor(strikes.length/2)];
+        const legs: any[] = [];
+        let name = "";
+
+        switch (advisorSignal.stance) {
+            case 'Strong Bullish':
+                name = "Bull Call Spread";
+                legs.push({ type: 'CE', strike: atm, action: 'BUY' });
+                legs.push({ type: 'CE', strike: getStrikeAtOffset(atm, 2), action: 'SELL' });
+                break;
+            case 'Strong Bearish':
+                name = "Bear Put Spread";
+                legs.push({ type: 'PE', strike: atm, action: 'BUY' });
+                legs.push({ type: 'PE', strike: getStrikeAtOffset(atm, -2), action: 'SELL' });
+                break;
+            case 'Rangebound':
+                name = "Iron Condor";
+                legs.push({ type: 'PE', strike: getStrikeAtOffset(atm, -4), action: 'BUY' });
+                legs.push({ type: 'PE', strike: getStrikeAtOffset(atm, -2), action: 'SELL' });
+                legs.push({ type: 'CE', strike: getStrikeAtOffset(atm, 2), action: 'SELL' });
+                legs.push({ type: 'CE', strike: getStrikeAtOffset(atm, 4), action: 'BUY' });
+                break;
+            case 'Buying at Support':
+                name = "Bull Put Spread";
+                legs.push({ type: 'PE', strike: getStrikeAtOffset(atm, -1), action: 'SELL' });
+                legs.push({ type: 'PE', strike: getStrikeAtOffset(atm, -3), action: 'BUY' });
+                break;
+            case 'Selling at Resistance':
+                name = "Bear Call Spread";
+                legs.push({ type: 'CE', strike: getStrikeAtOffset(atm, 1), action: 'SELL' });
+                legs.push({ type: 'CE', strike: getStrikeAtOffset(atm, 3), action: 'BUY' });
+                break;
+            default:
+                return null;
+        }
+
+        // Hydrate legs with current LTPs
+        const hydratedLegs = legs.map(leg => {
+            const data = optionChain.find((r: any) => r.Strike === leg.strike && r.Right === leg.type);
+            return { ...leg, entryPrice: data?.Close || 0, currentPrice: data?.Close || 0 };
+        });
+
+        return { name, legs: hydratedLegs, timestamp: currentTimestamp };
+    }, [advisorSignal, currentSpot, optionChain, strikes, closestSpotStrike, currentTimestamp]);
+
+    const activeStrategyMetrics = useMemo(() => {
+        if (!trackedStrategy || optionChain.length === 0) return null;
+
+        const lotSize = 50;
+        let totalPnl = 0;
+        const updatedLegs = trackedStrategy.legs.map((leg: any) => {
+            const currentData = optionChain.find((r: any) => r.Strike === leg.strike && r.Right === leg.type);
+            const currentPrice = currentData?.Close || 0;
+            const pnl = leg.action === 'BUY' ? (currentPrice - leg.entryPrice) : (leg.entryPrice - currentPrice);
+            totalPnl += pnl * lotSize;
+            return { ...leg, currentPrice, pnl: pnl * lotSize };
+        });
+
+        // Simplified Max Profit/Loss for Spreads
+        // This is a rough estimation for UI purposes
+        let maxProfit: any = "Calculating...";
+        let maxLoss: any = "Calculating...";
+        
+        if (trackedStrategy.name.includes("Spread")) {
+            const buyLeg = trackedStrategy.legs.find((l: any) => l.action === 'BUY');
+            const sellLeg = trackedStrategy.legs.find((l: any) => l.action === 'SELL');
+            if (buyLeg && sellLeg) {
+                const width = Math.abs(buyLeg.strike - sellLeg.strike);
+                const netCreditDebit = trackedStrategy.legs.reduce((acc: number, l: any) => acc + (l.action === 'BUY' ? -l.entryPrice : l.entryPrice), 0);
+                
+                if (netCreditDebit < 0) { // Net Debit (e.g. Bull Call Spread)
+                    maxProfit = (width + netCreditDebit) * lotSize;
+                    maxLoss = netCreditDebit * lotSize;
+                } else { // Net Credit (e.g. Bull Put Spread)
+                    maxProfit = netCreditDebit * lotSize;
+                    maxLoss = (width - netCreditDebit) * lotSize;
+                }
+            }
+        }
+
+        return {
+            ...trackedStrategy,
+            legs: updatedLegs,
+            totalPnl,
+            maxProfit: typeof maxProfit === 'number' ? maxProfit.toFixed(2) : maxProfit,
+            maxLoss: typeof maxLoss === 'number' ? Math.abs(maxLoss).toFixed(2) : maxLoss
+        };
+    }, [trackedStrategy, optionChain]);
 
     const handleGenerateAIInsights = async () => {
         if (!selectedExpiry) return;
@@ -831,6 +940,121 @@ export default function OptionChainExplorer() {
                         )}
                     </div>
                 </div>
+
+                {/* Recommended Strategy Section */}
+                {selectedExpiry && recommendedStrategy && !trackedStrategy && (
+                    <div className="card fade-in" style={{ marginBottom: 16, border: '1px solid var(--accent-primary)' }}>
+                        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span style={{ color: 'var(--accent-primary)' }}>💡</span>
+                                Advisor Recommendation: {recommendedStrategy.name}
+                            </div>
+                            <button 
+                                className="btn btn-primary"
+                                onClick={() => setTrackedStrategy(recommendedStrategy)}
+                                style={{ padding: '6px 16px', fontSize: 13 }}
+                            >
+                                Track This Strategy
+                            </button>
+                        </div>
+                        <div className="table-container" style={{ padding: '0 10px 10px' }}>
+                            <table className="option-chain-table" style={{ border: 'none' }}>
+                                <thead>
+                                    <tr>
+                                        <th>Action</th>
+                                        <th>Type</th>
+                                        <th>Strike</th>
+                                        <th style={{ textAlign: 'right' }}>LTP at {recommendedStrategy.timestamp.split(' ')[1]}</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {recommendedStrategy.legs.map((leg: any, idx: number) => (
+                                        <tr key={idx} style={{ background: 'rgba(255,255,255,0.02)' }}>
+                                            <td style={{ fontWeight: 700, color: leg.action === 'BUY' ? 'var(--blue)' : 'var(--orange)' }}>{leg.action}</td>
+                                            <td>
+                                                <span className={`badge ${leg.type === 'CE' ? 'badge-success' : 'badge-danger'}`} style={{ fontSize: 10 }}>
+                                                    {leg.type}
+                                                </span>
+                                            </td>
+                                            <td style={{ fontWeight: 700 }}>{leg.strike}</td>
+                                            <td style={{ textAlign: 'right' }}>{leg.entryPrice.toFixed(2)}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                )}
+
+                {/* Active Strategy Tracker */}
+                {selectedExpiry && activeStrategyMetrics && (
+                    <div className="card fade-in" style={{ 
+                        marginBottom: 16, 
+                        border: '1px solid var(--green)',
+                        boxShadow: '0 0 15px rgba(16, 185, 129, 0.1)'
+                    }}>
+                        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span style={{ color: 'var(--green)' }}>📈</span>
+                                Live Strategy Tracker: {activeStrategyMetrics.name}
+                            </div>
+                            <div style={{ display: 'flex', gap: 12 }}>
+                                <div className="badge" style={{ background: 'rgba(16, 185, 129, 0.2)', color: 'var(--green)', fontSize: 13, padding: '4px 12px' }}>
+                                    Total P&L: ₹{activeStrategyMetrics.totalPnl.toFixed(2)}
+                                </div>
+                                <button 
+                                    className="btn btn-danger"
+                                    onClick={() => setTrackedStrategy(null)}
+                                    style={{ padding: '4px 12px', fontSize: 12 }}
+                                >
+                                    Close Tracker
+                                </button>
+                            </div>
+                        </div>
+                        <div className="table-container" style={{ padding: '0 10px 10px' }}>
+                            <table className="option-chain-table" style={{ border: 'none' }}>
+                                <thead>
+                                    <tr>
+                                        <th>Leg</th>
+                                        <th>Strike</th>
+                                        <th style={{ textAlign: 'right' }}>Entry LTP</th>
+                                        <th style={{ textAlign: 'right' }}>Current LTP</th>
+                                        <th style={{ textAlign: 'right' }}>Leg P&L</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {activeStrategyMetrics.legs.map((leg: any, idx: number) => (
+                                        <tr key={idx} style={{ background: 'rgba(255,255,255,0.02)' }}>
+                                            <td>
+                                                <span style={{ fontWeight: 700, marginRight: 8, color: leg.action === 'BUY' ? 'var(--blue)' : 'var(--orange)' }}>{leg.action}</span>
+                                                <span className={`badge ${leg.type === 'CE' ? 'badge-success' : 'badge-danger'}`} style={{ fontSize: 10 }}>{leg.type}</span>
+                                            </td>
+                                            <td style={{ fontWeight: 700 }}>{leg.strike}</td>
+                                            <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{leg.entryPrice.toFixed(2)}</td>
+                                            <td style={{ textAlign: 'right', fontWeight: 600 }}>{leg.currentPrice.toFixed(2)}</td>
+                                            <td style={{ textAlign: 'right', fontWeight: 700, color: leg.pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                                                {leg.pnl >= 0 ? '+' : ''}{leg.pnl.toFixed(2)}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                                <tfoot>
+                                    <tr style={{ background: 'rgba(255,255,255,0.05)', borderTop: '1px solid var(--border-color)' }}>
+                                        <td colSpan={3} style={{ textAlign: 'left', fontSize: 11, color: 'var(--text-muted)' }}>
+                                            Strategy Entry: {activeStrategyMetrics.timestamp}
+                                        </td>
+                                        <td style={{ textAlign: 'right', fontWeight: 700 }}>Total Max Risk/Reward:</td>
+                                        <td style={{ textAlign: 'right' }}>
+                                            <span style={{ color: 'var(--green)' }}>P: ₹{activeStrategyMetrics.maxProfit}</span>
+                                            <span style={{ margin: '0 8px', opacity: 0.3 }}>|</span>
+                                            <span style={{ color: 'var(--red)' }}>L: ₹{activeStrategyMetrics.maxLoss}</span>
+                                        </td>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                    </div>
+                )}
 
             {/* AI Insights Card */}
             {selectedExpiry && timestamps.length > 0 && (
@@ -1210,7 +1434,7 @@ export default function OptionChainExplorer() {
                         </div>
                         <button 
                             onClick={(e) => { e.stopPropagation(); setIsAdvisorCollapsed(true); }}
-                            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 18, color: 'var(--text-muted)' }}
+                            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 18 }}
                         >
                             ×
                         </button>
