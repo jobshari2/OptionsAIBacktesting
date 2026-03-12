@@ -39,6 +39,7 @@ export default function OptionChainExplorer() {
     const [stepMinutes, setStepMinutes] = useState(5);
     const [isPlaying, setIsPlaying] = useState(false);
     const [trackedStrategy, setTrackedStrategy] = useState<any | null>(null);
+    const [tradeHistory, setTradeHistory] = useState<any[]>([]);
 
     // Chart Refs
     const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -415,42 +416,60 @@ export default function OptionChainExplorer() {
     return maxPainStrike;
     }, [optionChain]);
 
-    // OI Commentary Logic
+    // OI Commentary Logic (Expert Edition)
     const oiCommentary = useMemo(() => {
         if (!optionChain || optionChain.length === 0 || !currentSpot || topCallOiStrikes.length === 0 || topPutOiStrikes.length === 0) return null;
+
+        const totalCallOi = optionChain.filter((r: any) => r.Right === 'CE').reduce((acc: number, r: any) => acc + (r.OI || 0), 0);
+        const totalPutOi = optionChain.filter((r: any) => r.Right === 'PE').reduce((acc: number, r: any) => acc + (r.OI || 0), 0);
+        const pcr = totalCallOi > 0 ? totalPutOi / totalCallOi : 0;
 
         const callR1 = topCallOiStrikes[0];
         const putS1 = topPutOiStrikes[0];
         const spot = currentSpot;
+        const mp = maxPain;
 
         let sentiment = 'Neutral';
         let color = 'var(--text-muted)';
         let message = '';
+        let action = 'WAIT'; // Action ID for automation
+
+        const pcrSentiment = pcr > 1.2 ? 'Bearish' : pcr < 0.7 ? 'Bullish' : 'Neutral';
+        const mpPull = mp ? (mp > spot ? 'UP' : 'DOWN') : null;
+        const mpDist = mp ? Math.abs(mp - spot) : 99999;
+        const strongPull = mpDist > (spot * 0.005);
 
         if (spot > callR1) {
             sentiment = 'Bullish Breakout';
             color = 'var(--green)';
-            message = `Market has cleared the highest Call Resistance at ${callR1}. Strong upward momentum expected.`;
+            message = `Cleared R1 (${callR1}). PCR ${pcr.toFixed(2)} (${pcrSentiment}).`;
+            action = 'BULL_BREAKOUT';
         } else if (spot < putS1) {
             sentiment = 'Bearish Breakdown';
             color = 'var(--red)';
-            message = `Market has broken below the highest Put Support at ${putS1}. Downward pressure likely.`;
-        } else if (Math.abs(spot - callR1) < (spot * 0.005)) {
-            sentiment = 'Resistance Approaching';
+            message = `Below S1 (${putS1}). PCR ${pcr.toFixed(2)} (${pcrSentiment}).`;
+            action = 'BEAR_BREAKDOWN';
+        } else if (pcr > 1.3) {
+            sentiment = 'Bearish Bias';
             color = 'var(--orange)';
-            message = `Approaching heavy Call Resistance at ${callR1}. Watch for consolidation or reversal.`;
-        } else if (Math.abs(spot - putS1) < (spot * 0.005)) {
-            sentiment = 'Support Approaching';
+            message = `High PCR ${pcr.toFixed(2)}: heavy resistance at ${callR1}.`;
+            action = 'BEAR_BIAS';
+        } else if (pcr < 0.6) {
+            sentiment = 'Bullish Bias';
             color = 'var(--cyan)';
-            message = `Approaching heavy Put Support at ${putS1}. High probability of bounce.`;
+            message = `Low PCR ${pcr.toFixed(2)}: strong support at ${putS1}.`;
+            action = 'BULL_BIAS';
         } else {
             sentiment = 'Consolidating';
             color = 'var(--blue)';
-            message = `Trading between Support (${putS1}) and Resistance (${callR1}). Rangebound behavior likely.`;
+            message = `Neutral zone. PCR ${pcr.toFixed(2)} balanced.`;
+            action = 'NEUTRAL';
         }
 
-        return { sentiment, message, color };
-    }, [optionChain, currentSpot, topCallOiStrikes, topPutOiStrikes]);
+        if (strongPull && mp) message += ` MP ${mp} pull: ${mpPull}.`;
+
+        return { sentiment, message, color, pcr, action };
+    }, [optionChain, currentSpot, topCallOiStrikes, topPutOiStrikes, maxPain]);
 
 
     // Candlestick Chart Initialization
@@ -599,52 +618,77 @@ export default function OptionChainExplorer() {
     };
 
     const recommendedStrategy = useMemo(() => {
-        if (!advisorSignal || !currentSpot || strikes.length === 0) return null;
+        if (!oiCommentary || !currentSpot || strikes.length === 0) return null;
         
         const atm = closestSpotStrike || strikes[Math.floor(strikes.length/2)];
         const legs: any[] = [];
         let name = "";
 
-        switch (advisorSignal.stance) {
-            case 'Strong Bullish':
-                name = "Bull Call Spread";
+        switch (oiCommentary.action) {
+            case 'BULL_BREAKOUT':
+                name = "Bull Call Spread (Aggressive)";
                 legs.push({ type: 'CE', strike: atm, action: 'BUY' });
                 legs.push({ type: 'CE', strike: getStrikeAtOffset(atm, 2), action: 'SELL' });
                 break;
-            case 'Strong Bearish':
-                name = "Bear Put Spread";
+            case 'BULL_BIAS':
+                name = "Bull Put Spread (Credit)";
+                legs.push({ type: 'PE', strike: getStrikeAtOffset(atm, -1), action: 'SELL' });
+                legs.push({ type: 'PE', strike: getStrikeAtOffset(atm, -3), action: 'BUY' });
+                break;
+            case 'BEAR_BREAKDOWN':
+                name = "Bear Put Spread (Aggressive)";
                 legs.push({ type: 'PE', strike: atm, action: 'BUY' });
                 legs.push({ type: 'PE', strike: getStrikeAtOffset(atm, -2), action: 'SELL' });
                 break;
-            case 'Rangebound':
-                name = "Iron Condor";
+            case 'BEAR_BIAS':
+                name = "Bear Call Spread (Credit)";
+                legs.push({ type: 'CE', strike: getStrikeAtOffset(atm, 1), action: 'SELL' });
+                legs.push({ type: 'CE', strike: getStrikeAtOffset(atm, 3), action: 'BUY' });
+                break;
+            case 'NEUTRAL':
+                name = "Iron Condor (Neutral)";
                 legs.push({ type: 'PE', strike: getStrikeAtOffset(atm, -4), action: 'BUY' });
                 legs.push({ type: 'PE', strike: getStrikeAtOffset(atm, -2), action: 'SELL' });
                 legs.push({ type: 'CE', strike: getStrikeAtOffset(atm, 2), action: 'SELL' });
                 legs.push({ type: 'CE', strike: getStrikeAtOffset(atm, 4), action: 'BUY' });
                 break;
-            case 'Buying at Support':
-                name = "Bull Put Spread";
-                legs.push({ type: 'PE', strike: getStrikeAtOffset(atm, -1), action: 'SELL' });
-                legs.push({ type: 'PE', strike: getStrikeAtOffset(atm, -3), action: 'BUY' });
-                break;
-            case 'Selling at Resistance':
-                name = "Bear Call Spread";
-                legs.push({ type: 'CE', strike: getStrikeAtOffset(atm, 1), action: 'SELL' });
-                legs.push({ type: 'CE', strike: getStrikeAtOffset(atm, 3), action: 'BUY' });
-                break;
             default:
                 return null;
         }
 
-        // Hydrate legs with current LTPs
         const hydratedLegs = legs.map(leg => {
             const data = optionChain.find((r: any) => r.Strike === leg.strike && r.Right === leg.type);
             return { ...leg, entryPrice: data?.Close || 0, currentPrice: data?.Close || 0 };
         });
 
-        return { name, legs: hydratedLegs, timestamp: currentTimestamp };
-    }, [advisorSignal, currentSpot, optionChain, strikes, closestSpotStrike, currentTimestamp]);
+        return { name, legs: hydratedLegs, timestamp: currentTimestamp, action: oiCommentary.action };
+    }, [oiCommentary, currentSpot, optionChain, strikes, closestSpotStrike, currentTimestamp]);
+
+    // Automated Trade Lifecycle Management
+    const lastActionRef = useRef<string | null>(null);
+
+    useEffect(() => {
+        if (!oiCommentary || !recommendedStrategy) return;
+
+        // Check for action change
+        if (oiCommentary.action !== lastActionRef.current) {
+            
+            // 1. Close current trade if exists
+            if (trackedStrategy) {
+                const finalPnl = activeStrategyMetrics?.totalPnl || 0;
+                setTradeHistory(prev => [{
+                    ...trackedStrategy,
+                    exitTimestamp: currentTimestamp,
+                    exitSpot: currentSpot,
+                    finalPnl
+                }, ...prev]);
+            }
+
+            // 2. Open new trade
+            setTrackedStrategy(recommendedStrategy);
+            lastActionRef.current = oiCommentary.action;
+        }
+    }, [oiCommentary?.action, currentTimestamp]);
 
     const activeStrategyMetrics = useMemo(() => {
         if (!trackedStrategy || optionChain.length === 0) return null;
@@ -1447,6 +1491,61 @@ export default function OptionChainExplorer() {
                             </div>
                         )}
                     </div>
+
+                    {/* Trade History Section */}
+                    {tradeHistory.length > 0 && (
+                        <div className="card" style={{ marginTop: 16 }}>
+                            <div className="card-header" style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: 12 }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <h4 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                        📜 Automated Trade History
+                                        <span className="badge badge-secondary" style={{ fontSize: 10 }}>{tradeHistory.length} Trades</span>
+                                    </h4>
+                                    <div style={{ fontSize: 13, fontWeight: 900, color: tradeHistory.reduce((acc, t) => acc + t.finalPnl, 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                                        Total Session P/L: {tradeHistory.reduce((acc, t) => acc + t.finalPnl, 0).toFixed(2)}
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="table-container" style={{ marginTop: 12 }}>
+                                <table className="option-chain-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Entry Time</th>
+                                            <th>Exit Time</th>
+                                            <th>Strategy</th>
+                                            <th style={{ textAlign: 'right' }}>Final P&L</th>
+                                            <th>Stance at Exit</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {tradeHistory.map((trade, idx) => (
+                                            <tr key={idx}>
+                                                <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{trade.timestamp}</td>
+                                                <td style={{ fontSize: 11, color: 'var(--text-primary)', fontWeight: 600 }}>{trade.exitTimestamp}</td>
+                                                <td style={{ fontWeight: 700 }}>{trade.name}</td>
+                                                <td style={{ 
+                                                    textAlign: 'right', 
+                                                    fontWeight: 900, 
+                                                    color: trade.finalPnl >= 0 ? 'var(--green)' : 'var(--red)' 
+                                                }}>
+                                                    {trade.finalPnl >= 0 ? '+' : ''}{trade.finalPnl.toFixed(2)}
+                                                </td>
+                                                <td>
+                                                    <span className="badge" style={{ 
+                                                        background: 'rgba(255,255,255,0.05)', 
+                                                        color: 'var(--text-muted)',
+                                                        fontSize: 10
+                                                    }}>
+                                                        {trade.action}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
                 </>
             ) : selectedExpiry ? (
                 <div className="card">
@@ -1467,24 +1566,24 @@ export default function OptionChainExplorer() {
             )
             }
             {/* Global Strategy Advisor Overlay */}
-            {advisorSignal && !isAdvisorCollapsed && (
+            {oiCommentary && !isAdvisorCollapsed && (
                 <div className="fade-in" style={{
                     position: 'fixed',
                     top: 20,
                     right: 20,
-                    width: 280,
+                    width: 320,
                     background: 'rgba(15, 23, 42, 0.95)',
                     backdropFilter: 'blur(12px)',
-                    border: `1px solid ${advisorSignal.color}`,
+                    border: `1px solid ${oiCommentary.color}`,
                     borderRadius: '16px',
-                    padding: '16px',
+                    padding: '20px',
                     zIndex: 2000,
                     boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
                     transition: 'all 0.3s ease'
                 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                         <div style={{ fontSize: 10, textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 800, letterSpacing: '1px' }}>
-                            Strategy Advisor
+                            Expert Advisor (AUTO)
                         </div>
                         <button 
                             onClick={(e) => { e.stopPropagation(); setIsAdvisorCollapsed(true); }}
@@ -1493,54 +1592,69 @@ export default function OptionChainExplorer() {
                             ×
                         </button>
                     </div>
-                    <div style={{ fontSize: 18, fontWeight: 800, color: advisorSignal.color, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: advisorSignal.color, boxShadow: `0 0 10px ${advisorSignal.color}` }} />
-                        {advisorSignal.stance}
-                    </div>
-                    <div style={{ marginBottom: 16 }}>
-                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, fontWeight: 600 }}>Action Plan:</div>
+                    
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
                         <div style={{ 
-                            fontSize: 14, 
-                            fontWeight: 700, 
+                            padding: '6px 12px', 
+                            background: `${oiCommentary.color}22`, 
+                            color: oiCommentary.color, 
+                            borderRadius: '20px', 
+                            fontSize: 12, 
+                            fontWeight: 900,
+                            border: `1px solid ${oiCommentary.color}44`
+                        }}>
+                            {oiCommentary.sentiment}
+                        </div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: '#fff' }}>PCR: {oiCommentary.pcr.toFixed(2)}</div>
+                    </div>
+
+                    <div style={{ marginBottom: 16 }}>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6, fontWeight: 600 }}>ACTIVE STRATEGY:</div>
+                        <div style={{ 
+                            fontSize: 15, 
+                            fontWeight: 800, 
                             color: 'var(--text-strong)', 
                             background: 'rgba(255,255,255,0.05)', 
-                            padding: '8px 12px', 
-                            borderRadius: '8px',
+                            padding: '12px', 
+                            borderRadius: '10px',
                             border: '1px solid rgba(255,255,255,0.1)'
                         }}>
-                            {advisorSignal.strategy}
+                            {trackedStrategy?.name || 'Monitoring...'}
                         </div>
                     </div>
-                    <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5, background: 'rgba(0,0,0,0.2)', padding: '10px', borderRadius: '8px' }}>
-                        {advisorSignal.reason}
+
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '10px', borderLeft: `3px solid ${oiCommentary.color}` }}>
+                        {oiCommentary.message}
+                        <div style={{ marginTop: 8, fontWeight: 800, color: oiCommentary.color }}>➜ Auto-Managed Lifecycle Active</div>
                     </div>
                 </div>
             )}
             
             {/* Minimized Advisor Button */}
-            {advisorSignal && isAdvisorCollapsed && (
+            {oiCommentary && isAdvisorCollapsed && (
                 <div 
                     onClick={() => setIsAdvisorCollapsed(false)}
                     style={{
                         position: 'fixed',
                         top: 20,
                         right: 20,
-                        padding: '10px 16px',
-                        background: advisorSignal.color,
-                        color: advisorSignal.color === 'var(--red)' ? '#fff' : '#000',
+                        padding: '10px 18px',
+                        background: oiCommentary.color,
+                        color: ['var(--green)', 'var(--cyan)'].includes(oiCommentary.color) ? '#000' : '#fff',
                         borderRadius: '30px',
-                        fontWeight: 700,
+                        fontWeight: 900,
                         fontSize: 12,
                         cursor: 'pointer',
                         zIndex: 2000,
-                        boxShadow: '0 10px 15px rgba(0,0,0,0.3)',
+                        boxShadow: `0 10px 20px ${oiCommentary.color}44`,
                         display: 'flex',
                         alignItems: 'center',
                         gap: 8,
-                        border: '2px solid rgba(255,255,255,0.2)'
+                        border: '2px solid rgba(255,255,255,0.3)',
+                        textTransform: 'uppercase'
                     }}
                 >
-                    💡 Advisor: {advisorSignal.stance}
+                    💡 Insight: {oiCommentary.sentiment}
                 </div>
             )}
         </div >
