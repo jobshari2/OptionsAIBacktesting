@@ -412,8 +412,45 @@ export default function OptionChainExplorer() {
             }
         });
 
-        return maxPainStrike;
+    return maxPainStrike;
     }, [optionChain]);
+
+    // OI Commentary Logic
+    const oiCommentary = useMemo(() => {
+        if (!optionChain || optionChain.length === 0 || !currentSpot || topCallOiStrikes.length === 0 || topPutOiStrikes.length === 0) return null;
+
+        const callR1 = topCallOiStrikes[0];
+        const putS1 = topPutOiStrikes[0];
+        const spot = currentSpot;
+
+        let sentiment = 'Neutral';
+        let color = 'var(--text-muted)';
+        let message = '';
+
+        if (spot > callR1) {
+            sentiment = 'Bullish Breakout';
+            color = 'var(--green)';
+            message = `Market has cleared the highest Call Resistance at ${callR1}. Strong upward momentum expected.`;
+        } else if (spot < putS1) {
+            sentiment = 'Bearish Breakdown';
+            color = 'var(--red)';
+            message = `Market has broken below the highest Put Support at ${putS1}. Downward pressure likely.`;
+        } else if (Math.abs(spot - callR1) < (spot * 0.005)) {
+            sentiment = 'Resistance Approaching';
+            color = 'var(--orange)';
+            message = `Approaching heavy Call Resistance at ${callR1}. Watch for consolidation or reversal.`;
+        } else if (Math.abs(spot - putS1) < (spot * 0.005)) {
+            sentiment = 'Support Approaching';
+            color = 'var(--cyan)';
+            message = `Approaching heavy Put Support at ${putS1}. High probability of bounce.`;
+        } else {
+            sentiment = 'Consolidating';
+            color = 'var(--blue)';
+            message = `Trading between Support (${putS1}) and Resistance (${callR1}). Rangebound behavior likely.`;
+        }
+
+        return { sentiment, message, color };
+    }, [optionChain, currentSpot, topCallOiStrikes, topPutOiStrikes]);
 
 
     // Candlestick Chart Initialization
@@ -895,6 +932,23 @@ export default function OptionChainExplorer() {
                                     }}>
                                         Max Pain: {maxPain}
                                     </span>
+                                )}
+                                {oiCommentary && (
+                                    <div style={{
+                                        marginLeft: 16,
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: 8,
+                                        fontSize: 12,
+                                        background: 'rgba(255, 255, 255, 0.05)',
+                                        padding: '2px 12px',
+                                        borderRadius: '6px',
+                                        border: `1px solid ${oiCommentary.color}44`,
+                                        color: '#ffffff'
+                                    }}>
+                                        <span style={{ color: oiCommentary.color, fontWeight: 900, textTransform: 'uppercase', fontSize: 10 }}>{oiCommentary.sentiment}:</span>
+                                        <span style={{ fontWeight: 600 }}>{oiCommentary.message}</span>
+                                    </div>
                                 )}
                             </div>
                         </div>
