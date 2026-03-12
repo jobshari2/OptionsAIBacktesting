@@ -3,7 +3,7 @@ import { createChart, ColorType, CrosshairMode, CandlestickSeries } from 'lightw
 import { dataApi, aiApi } from '../api/client';
 import { useDataStore } from '../stores/appStore';
 import ReactMarkdown from 'react-markdown';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from 'recharts';
 
 export default function OptionChainExplorer() {
     const { expiries, setExpiries, selectedExpiry, setSelectedExpiry, optionChain, setOptionChain, globalUseUnified } = useDataStore();
@@ -293,12 +293,14 @@ export default function OptionChainExplorer() {
         };
     }, [currentTimestamp, indexData, futuresData]);
 
-    const filteredChain = optionChain.filter((row: any) => {
-        if (!showCE && row.Right === 'CE') return false;
-        if (!showPE && row.Right === 'PE') return false;
-        if (filter && !String(row.Strike).includes(filter)) return false;
-        return true;
-    });
+    const filteredChain = useMemo(() => {
+        return optionChain.filter((row: any) => {
+            if (!showCE && row.Right === 'CE') return false;
+            if (!showPE && row.Right === 'PE') return false;
+            if (filter && !String(row.Strike).includes(filter)) return false;
+            return true;
+        });
+    }, [optionChain, showCE, showPE, filter]);
 
     const strikes = [...new Set(filteredChain.map((r: any) => r.Strike))].sort((a, b) => a - b);
 
@@ -315,18 +317,18 @@ export default function OptionChainExplorer() {
         return () => clearInterval(interval);
     }, [isPlaying, currentIndex, timestamps, stepMinutes]);
 
-    // Top OI Strikes Calculation (Separated for Call and Put)
+    // Top OI Strikes Calculation (Separated for Call and Put) - Always use the FULL option chain
     const { topCallOiStrikes, topPutOiStrikes } = useMemo(() => {
-        if (!currentTimestamp || filteredChain.length === 0) return { topCallOiStrikes: [], topPutOiStrikes: [] };
+        if (!currentTimestamp || optionChain.length === 0) return { topCallOiStrikes: [], topPutOiStrikes: [] };
 
-        const ceStrikes = filteredChain.filter((r: any) => r.Right === 'CE').sort((a, b) => (b.OI || 0) - (a.OI || 0));
-        const peStrikes = filteredChain.filter((r: any) => r.Right === 'PE').sort((a, b) => (b.OI || 0) - (a.OI || 0));
+        const ceStrikes = optionChain.filter((r: any) => r.Right === 'CE').sort((a, b) => (b.OI || 0) - (a.OI || 0));
+        const peStrikes = optionChain.filter((r: any) => r.Right === 'PE').sort((a, b) => (b.OI || 0) - (a.OI || 0));
 
         return {
             topCallOiStrikes: ceStrikes.slice(0, 3).map(r => r.Strike),
             topPutOiStrikes: peStrikes.slice(0, 3).map(r => r.Strike)
         };
-    }, [filteredChain, currentTimestamp]);
+    }, [optionChain, currentTimestamp]);
 
     // Strategy Advisor Logic
     const advisorSignal = useMemo(() => {
@@ -376,6 +378,41 @@ export default function OptionChainExplorer() {
             };
         }
     }, [currentSpot, topCallOiStrikes, topPutOiStrikes]);
+ 
+    // Max Pain Calculation Logic
+    const maxPain = useMemo(() => {
+        if (!optionChain || optionChain.length === 0) return null;
+
+        const uniqueStrikes = [...new Set(optionChain.map((r: any) => r.Strike))].sort((a, b) => a - b);
+        let minPain = Infinity;
+        let maxPainStrike = uniqueStrikes[0];
+
+        uniqueStrikes.forEach(targetStrike => {
+            let totalPain = 0;
+            optionChain.forEach((r: any) => {
+                const strike = r.Strike;
+                const oi = r.OI || 0;
+                if (r.Right === 'CE') {
+                    // Call pain: Intrinsic value if spot > strike
+                    if (targetStrike > strike) {
+                        totalPain += (targetStrike - strike) * oi;
+                    }
+                } else {
+                    // Put pain: Intrinsic value if spot < strike
+                    if (targetStrike < strike) {
+                        totalPain += (strike - targetStrike) * oi;
+                    }
+                }
+            });
+
+            if (totalPain < minPain) {
+                minPain = totalPain;
+                maxPainStrike = targetStrike;
+            }
+        });
+
+        return maxPainStrike;
+    }, [optionChain]);
 
     // Candlestick Chart Initialization
     useEffect(() => {
@@ -736,6 +773,20 @@ export default function OptionChainExplorer() {
                             <div className="card-title" onClick={() => setIsChartCollapsed(!isChartCollapsed)} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
                                 <span>{isChartCollapsed ? '▶' : '▼'}</span>
                                 OI Buildup (Open Interest)
+                                {maxPain && (
+                                    <span style={{ 
+                                        marginLeft: 12, 
+                                        fontSize: 12, 
+                                        padding: '2px 8px', 
+                                        borderRadius: '4px', 
+                                        background: 'rgba(234, 179, 8, 0.1)', 
+                                        color: 'var(--yellow)',
+                                        border: '1px solid rgba(234, 179, 8, 0.2)',
+                                        fontWeight: 700
+                                    }}>
+                                        Max Pain: {maxPain}
+                                    </span>
+                                )}
                             </div>
                         </div>
                         {!isChartCollapsed && (
@@ -764,6 +815,14 @@ export default function OptionChainExplorer() {
                                             formatter={(val: any) => val.toLocaleString()}
                                         />
                                         <Legend wrapperStyle={{ paddingTop: '10px', fontSize: '11px' }} />
+                                        {maxPain && (
+                                            <ReferenceLine 
+                                                x={maxPain} 
+                                                stroke="var(--yellow)" 
+                                                strokeDasharray="3 3" 
+                                                label={{ position: 'top', value: 'Max Pain', fill: 'var(--yellow)', fontSize: 10, fontWeight: 700 }} 
+                                            />
+                                        )}
                                         <Bar dataKey="ce_oi" name="Call OI" fill="var(--green)" radius={[4, 4, 0, 0]} opacity={0.8} />
                                         <Bar dataKey="pe_oi" name="Put OI" fill="var(--red)" radius={[4, 4, 0, 0]} opacity={0.8} />
                                     </BarChart>
