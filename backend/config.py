@@ -2,7 +2,12 @@
 Central configuration for the Nifty Options Backtesting Platform.
 """
 from pathlib import Path
+import os
 from pydantic import BaseModel
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 class DataConfig(BaseModel):
@@ -15,6 +20,13 @@ class DataConfig(BaseModel):
     index_filename: str = "NIFTY_Index_1minute.parquet"
     unified_filename: str = "NIFTY_Unified_1minute.parquet"
     cache_max_size: int = 50  # Max number of expiries to cache in memory
+
+
+class BreezeConfig(BaseModel):
+    """ICICI Breeze API configuration."""
+    app_key: str = os.getenv("BREEZE_APP_KEY", "")
+    secret_key: str = os.getenv("BREEZE_SECRET_KEY", "")
+    token_path: str = "backend/api/breeze/breeze_token.json"
 
 
 class BacktestConfig(BaseModel):
@@ -30,6 +42,7 @@ class BacktestConfig(BaseModel):
 
 class AIConfig(BaseModel):
     """AI optimizer configuration."""
+    api_key: str = os.getenv("GEMINI_API_KEY", "")
     max_iterations: int = 50
     initial_points: int = 10
     exploration_factor: float = 0.1
@@ -69,6 +82,7 @@ class AppConfig(BaseModel):
     backtest: BacktestConfig = BacktestConfig()
     ai: AIConfig = AIConfig()
     intelligence: IntelligenceConfig = IntelligenceConfig()
+    breeze: BreezeConfig = BreezeConfig()
     db_path: str = "data/backtesting.duckdb"
     strategies_dir: str = "strategies"
     host: str = "0.0.0.0"

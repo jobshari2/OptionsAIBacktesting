@@ -14,6 +14,7 @@ import IntelligenceEngine from './pages/IntelligenceEngine';
 import AdaptiveDashboard from './pages/AdaptiveDashboard';
 import DataPerformance from './pages/DataPerformance';
 import MLPredictor from './pages/MLPredictor';
+import OptionChainLive from './pages/OptionChainLive';
 
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: '📊', section: 'Overview' },
@@ -22,6 +23,7 @@ const navItems = [
   { id: 'trades', label: 'Trade Log', icon: '📋', section: 'Trading' },
   { id: 'comparison', label: 'Compare', icon: '⚖️', section: 'Trading' },
   { id: 'option-chain', label: 'Option Chain', icon: '🔗', section: 'Research' },
+  { id: 'option-chain-live', label: 'Option Chain Live', icon: '🔴', section: 'Research' },
   { id: 'animation', label: 'Replay', icon: '▶️', section: 'Research' },
   { id: 'ai-optimizer', label: 'AI Optimizer', icon: '🤖', section: 'AI' },
   { id: 'intelligence', label: 'Intelligence Engine', icon: '🧠', section: 'AI' },
@@ -58,6 +60,7 @@ function App() {
       case 'trades': return <TradeLog />;
       case 'comparison': return <StrategyComparison />;
       case 'option-chain': return <OptionChainExplorer />;
+      case 'option-chain-live': return <OptionChainLive />;
       case 'animation': return <StrategyAnimation />;
       case 'ai-optimizer': return <AIOptimizer />;
       case 'intelligence': return <IntelligenceEngine />;
@@ -75,6 +78,7 @@ function App() {
     trades: { title: 'Trade Log', subtitle: 'Detailed trade history and analysis' },
     comparison: { title: 'Strategy Comparison', subtitle: 'Compare multiple backtest runs' },
     'option-chain': { title: 'Option Chain Explorer', subtitle: 'Historical option chain data' },
+    'option-chain-live': { title: 'Option Chain Live', subtitle: 'Real-time option chain data via ICICI Breeze API' },
     animation: { title: 'Strategy Replay', subtitle: 'Minute-by-minute strategy animation' },
     'ai-optimizer': { title: 'AI Optimizer', subtitle: 'AI-powered strategy optimization' },
     intelligence: { title: 'Intelligence Engine', subtitle: 'ML-powered regime detection & adaptive strategy switching' },

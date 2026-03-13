@@ -200,3 +200,92 @@ export const mlApi = {
     train: () => fetchJSON('/api/ml/train', { method: 'POST' }),
     getHistoricalPredictions: (expiry: string) => fetchJSON(`/api/ml/historical/${expiry}`),
 };
+
+// --- Breeze APIs ---
+export const breezeApi = {
+    getLoginUrl: () => fetchJSON('/api/breeze/login-url'),
+    getStatus: () => fetchJSON('/api/breeze/status'),
+    exchangeSession: (apiSession: string) => fetchJSON('/api/breeze/session', { method: 'POST', body: JSON.stringify({ api_session: apiSession }) }),
+    getHistorical: (params: {
+        stock_code: string;
+        exchange_code: string;
+        product_type: string;
+        interval: string;
+        from_date: string;
+        to_date: string;
+        expiry_date?: string;
+        right?: string;
+        strike_price?: string;
+    }) => {
+        const qs = new URLSearchParams(params as any).toString();
+        return fetchJSON(`/api/breeze/historical?${qs}`);
+    },
+    getOptionChainQuotes: (params: {
+        stock_code: string;
+        exchange_code: string;
+        product_type: string;
+        expiry_date: string;
+    }) => {
+        const qs = new URLSearchParams(params as any).toString();
+        return fetchJSON(`/api/breeze/option-chain?${qs}`);
+    }
+};
+
+export class BreezeWS {
+    private ws: WebSocket | null = null;
+    private onTick: (tick: any) => void;
+    private onError: (msg: string) => void;
+
+    constructor(onTick: (tick: any) => void, onError: (msg: string) => void) {
+        this.onTick = onTick;
+        this.onError = onError;
+    }
+
+    connect() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = 'localhost:8000'; // Hardcoded as per API_BASE
+        this.ws = new WebSocket(`${protocol}//${host}/api/breeze/ws`);
+
+        this.ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.type === 'tick') {
+                this.onTick(data.data);
+            } else if (data.type === 'error') {
+                this.onError(data.message);
+            }
+        };
+
+        this.ws.onclose = () => {
+            console.log('Breeze WS disconnected');
+        };
+
+        this.ws.onerror = (err) => {
+            console.error('Breeze WS error:', err);
+            this.onError('WebSocket connection error');
+        };
+    }
+
+    subscribe(tokens: string[]) {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ command: 'subscribe', tokens }));
+        }
+    }
+
+    subscribeOhlc(tokens: string[], interval: string = '1minute') {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ command: 'subscribe_ohlc', tokens, interval }));
+        }
+    }
+
+    unsubscribe(tokens: string[]) {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ command: 'unsubscribe', tokens }));
+        }
+    }
+
+    disconnect() {
+        if (this.ws) {
+            this.ws.close();
+        }
+    }
+}

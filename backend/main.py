@@ -15,6 +15,7 @@ from backend.api.routes_ai import router as ai_router
 from backend.api.routes_intelligence import router as intelligence_router
 from backend.api.routes_adaptive import router as adaptive_router
 from backend.api.routes_ml import router as ml_router
+from backend.api.breeze.routes_breeze import router as breeze_router
 from backend.config import config
 
 app = FastAPI(
@@ -43,6 +44,7 @@ app.include_router(ai_router)
 app.include_router(intelligence_router)
 app.include_router(adaptive_router)
 app.include_router(ml_router)
+app.include_router(breeze_router)
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
