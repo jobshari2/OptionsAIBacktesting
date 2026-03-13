@@ -169,8 +169,12 @@ export default function OptionChainLive() {
             if (res.data) {
                 setLiveIndexData(res.data);
             }
-        } catch (e) {
+        } catch (e: any) {
             console.error("Failed to load live nifty:", e);
+            if (e.message?.includes('401') || e.message?.toLowerCase().includes('session expired') || e.message?.toLowerCase().includes('login')) {
+                setAuthStatus(prev => prev ? { ...prev, authenticated: false } : { authenticated: false });
+                alert("Breeze session expired. Please re-login using the Breeze panel.");
+            }
         }
     };
 
@@ -324,7 +328,13 @@ export default function OptionChainLive() {
             }
 
         } catch (e: any) {
-            alert("Failed to load live chain: " + e.message);
+            console.error("Failed to load live chain:", e);
+            if (e.message?.includes('401') || e.message?.toLowerCase().includes('session expired') || e.message?.toLowerCase().includes('login')) {
+                setAuthStatus(prev => prev ? { ...prev, authenticated: false } : { authenticated: false });
+                alert("Breeze session expired. Please re-login.");
+            } else {
+                alert("Failed to load live chain: " + e.message);
+            }
         } finally {
             setLoading(false);
         }

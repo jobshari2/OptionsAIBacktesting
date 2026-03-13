@@ -51,12 +51,19 @@ class BreezeHistoricalClient:
                     else:
                         raise ValueError("Rate limit exceeded - too many requests")
                 
+                if response.status_code == 401:
+                    raise ValueError("Breeze session expired. Please re-login to ICICI Breeze.")
+                
                 if response.status_code != 200:
                     raise ValueError(f"Breeze historical error: {response.status_code} {response.text}")
                 
                 data = response.json()
                 if data.get("Status") != 200:
-                    raise ValueError(data.get("Error") or "Breeze API returned an error")
+                    status_err = data.get("Status")
+                    error_msg = data.get("Error") or "Breeze API returned an error"
+                    if status_err == 401 or "Invalid User Details" in error_msg:
+                        raise ValueError("Breeze session expired. Please re-login to ICICI Breeze.")
+                    raise ValueError(error_msg)
                 
                 records = data.get("Success") or []
                 return [self._normalize_record(item) for item in records]
@@ -66,6 +73,9 @@ class BreezeHistoricalClient:
                     time.sleep(wait_time)
                 else:
                     raise ValueError(f"Failed to fetch data after {max_retries} retries: {str(e)}") from e
+            except ValueError:
+                # Re-raise known ValueErrors (like session expired) immediately
+                raise
             except Exception as e:
                 self._logger.exception("Unexpected error fetching chunk")
                 raise
@@ -106,21 +116,36 @@ class BreezeHistoricalClient:
 
     def get_option_chain_quotes(self, stock_code: str, exchange_code: str, product_type: str, expiry_date: str):
         """Fetch full option chain quotes (meta and tokens)"""
-        breeze = self.auth.get_breeze()
-        if not breeze:
-            raise ValueError("Breeze not authenticated")
-            
-        res = breeze.get_option_chain_quotes(
-            stock_code=stock_code,
-            exchange_code=exchange_code,
-            product_type=product_type,
-            expiry_date=expiry_date
-        )
+        url = "https://breezeapi.icicidirect.com/api/v2/optionchain"
+        headers = {
+            "X-SessionToken": self._auth.get_session_token(),
+            "apikey": self._auth.get_api_key(),
+        }
         
-        if res.get("Status") != 200:
-            raise ValueError(f"Breeze API Error: {res.get('Error', 'Unknown error')}")
+        # Breeze option chain API requires:
+        # stock_code, exchange_code, expiry_date, product_type
+        # And optionally strike_price, right
+        params = {
+            "stock_code": stock_code,
+            "exch_code": exchange_code,
+            "expiry_date": self._format_expiry_date(expiry_date),
+            "product_type": product_type,
+        }
+        
+        response = self._session.get(url, params=params, headers=headers, timeout=15)
+        if response.status_code != 200:
+            if response.status_code == 401:
+                raise ValueError("Breeze session expired. Please re-login.")
+            raise ValueError(f"Breeze option chain error: {response.status_code} {response.text}")
             
-        return res.get("Success", [])
+        data = response.json()
+        if data.get("Status") != 200:
+            error_msg = data.get("Error") or "Breeze API returned an error"
+            if data.get("Status") == 401 or "Invalid User Details" in error_msg:
+                 raise ValueError("Breeze session expired. Please re-login.")
+            raise ValueError(error_msg)
+            
+        return data.get("Success", [])
 
     def _normalize_interval(self, interval: str) -> str:
         normalized = interval.lower()
