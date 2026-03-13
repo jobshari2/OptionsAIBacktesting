@@ -74,3 +74,6 @@ class BreezeAuth:
 
     def get_status(self) -> BreezeTokenData | None:
         return self._store.load()
+
+    def get_token_data(self) -> BreezeTokenData | None:
+        return self._store.load()

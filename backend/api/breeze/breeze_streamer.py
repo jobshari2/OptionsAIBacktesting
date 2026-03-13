@@ -22,18 +22,36 @@ class BreezeStreamer:
         if self._is_connected:
             return
 
+        import base64
         api_key = self._auth.get_api_key()
-        session_token = self._auth.get_session_token()
-        
-        self._breeze = BreezeConnect(api_key=api_key)
-        # Assuming secret is in config but not explicitly needed for ws_connect if session is already active?
-        # Actually generate_session is needed to set the internal session token
-        # This might be tricky if we don't have the secret key here or if session is already active elsewhere.
-        # But looking at SDK docs, breeze.generate_session(api_secret=api_secret, session_token=session_token) is required.
-        
-        # We need the secret key from config.
+        token_data = self._auth.get_token_data()
+        if not token_data:
+            raise ValueError("Breeze session not found. Please login first.")
+
         from backend.config import config
-        self._breeze.generate_session(api_secret=config.breeze.secret_key, session_token=session_token)
+        self._breeze = BreezeConnect(api_key=api_key)
+        
+        # Decode Base64 session token (Format: USERID:TOKEN)
+        try:
+            decoded = base64.b64decode(token_data.session_token).decode('ascii')
+            parts = decoded.split(":")
+            if len(parts) != 2:
+                raise ValueError("Invalid session token format after decoding")
+            u_id, s_key = parts
+        except Exception as e:
+            logger.error(f"Failed to decode session token: {e}")
+            raise ValueError(f"Failed to decode session token: {e}")
+
+        # Manually set credentials to bypass generate_session which consumes api_session
+        self._breeze.user_id = u_id
+        self._breeze.session_key = s_key
+        self._breeze.secret_key = config.breeze.secret_key
+        
+        # Initialize internal SDK state
+        try:
+            self._breeze.get_stock_script_list()
+        except Exception as e:
+            logger.warning(f"Failed to download stock script list: {e}. Some symbols might not work.")
 
         def on_ticks(ticks):
             self._handle_tick(ticks)
