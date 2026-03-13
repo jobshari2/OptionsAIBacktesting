@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List
 import requests
 
+from backend.logger import logger as central_logger
 from .breeze_auth import BreezeAuth
 from .models import BreezeHistoricalRequest
 
@@ -26,7 +27,7 @@ class BreezeHistoricalClient:
         )
         self._session.mount('http://', adapter)
         self._session.mount('https://', adapter)
-        self._logger = logging.getLogger(__name__)
+        self._logger = central_logger
 
     def _parse_datetime(self, value: str) -> datetime:
         if "T" in value:
@@ -55,6 +56,7 @@ class BreezeHistoricalClient:
                     raise ValueError("Breeze session expired. Please re-login to ICICI Breeze.")
                 
                 if response.status_code != 200:
+                    self._logger.error("Breeze API error: %s %s", response.status_code, response.text)
                     raise ValueError(f"Breeze historical error: {response.status_code} {response.text}")
                 
                 data = response.json()
@@ -91,12 +93,24 @@ class BreezeHistoricalClient:
             "apikey": self._auth.get_api_key(),
         }
 
+        from_date_dt = self._parse_datetime(request.from_date)
+        to_date_dt = self._parse_datetime(request.to_date)
+        
+        # Ensure now_dt is either naive or aware matching the parsed dates
+        # _parse_datetime with fromisoformat might return aware if +00:00 or Z is present
+        now_dt = datetime.now(to_date_dt.tzinfo) if to_date_dt.tzinfo else datetime.now()
+
+        # Safety: clip future to_date to current time
+        if to_date_dt > now_dt:
+            self._logger.warning("Clipping future to_date from %s to %s", to_date_dt, now_dt)
+            to_date_dt = now_dt
+            
         params = {
             "stock_code": request.stock_code,
             "exch_code": request.exchange_code,
             "interval": interval,
-            "from_date": self._format_datetime(request.from_date),
-            "to_date": self._format_datetime(request.to_date),
+            "from_date": self._format_datetime_obj(from_date_dt),
+            "to_date": self._format_datetime_obj(to_date_dt),
             "product_type": product_type,
         }
         
@@ -159,19 +173,9 @@ class BreezeHistoricalClient:
             return "1day"
         return normalized
 
-    def _format_datetime(self, value: str) -> str:
-        if not value:
-            raise ValueError("from_date and to_date are required")
-        try:
-            if "T" in value:
-                dt = datetime.fromisoformat(value)
-            elif " " in value:
-                dt = datetime.fromisoformat(value.replace(" ", "T"))
-            else:
-                dt = datetime.strptime(value, "%Y-%m-%d")
-        except ValueError as exc:
-            raise ValueError(f"Invalid datetime format: {value}") from exc
-        return dt.isoformat()
+    def _format_datetime_obj(self, dt: datetime) -> str:
+        """Format datetime object to Breeze expected ISO format with .000Z"""
+        return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
     def _normalize_record(self, item: Dict[str, Any]) -> Dict[str, Any]:
         return {

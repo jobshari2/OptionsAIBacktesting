@@ -235,16 +235,23 @@ export class BreezeWS {
     private ws: WebSocket | null = null;
     private onTick: (tick: any) => void;
     private onError: (msg: string) => void;
+    private onOpen?: () => void;
 
-    constructor(onTick: (tick: any) => void, onError: (msg: string) => void) {
+    constructor(onTick: (tick: any) => void, onError: (msg: string) => void, onOpen?: () => void) {
         this.onTick = onTick;
         this.onError = onError;
+        this.onOpen = onOpen;
     }
 
     connect() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const host = 'localhost:8000'; // Hardcoded as per API_BASE
         this.ws = new WebSocket(`${protocol}//${host}/api/breeze/ws`);
+
+        this.ws.onopen = () => {
+            console.log('Breeze WS connected');
+            if (this.onOpen) this.onOpen();
+        };
 
         this.ws.onmessage = (event) => {
             const data = JSON.parse(event.data);

@@ -136,10 +136,16 @@ export default function OptionChainLive() {
                     setWsConnected(true);
                 },
                 (err) => {
+                    console.error("Breeze WS Error:", err);
                     setWsError(err);
                     setWsConnected(false);
+                },
+                () => {
+                    console.log("Breeze WS Connection Opened Successfully");
+                    setWsConnected(true);
                 }
             );
+            console.log("Initiating Breeze WS Connection...");
             ws.connect();
             wsRef.current = ws;
             // Immediate NIFTY subscriptions: Ticks for spot price, OHLC for chart
@@ -157,14 +163,43 @@ export default function OptionChainLive() {
     const loadLiveNifty = async () => {
         if (!authStatus?.authenticated) return;
         try {
-            const today = new Date().toISOString().split('T')[0];
+            const now = new Date();
+            const todayStr = now.toISOString().split('T')[0];
+            
+            // market open at 09:15 IST = 03:45 UTC
+            const marketOpenToday = new Date(todayStr + 'T03:45:00.000Z');
+            
+            let from_date, to_date;
+            
+            if (now < marketOpenToday) {
+                // Pre-market: Fetch last trading session (yesterday)
+                const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+                const yesterdayStr = yesterday.toISOString().split('T')[0];
+                from_date = yesterdayStr + 'T03:45:00.000Z';
+                to_date = yesterdayStr + 'T10:00:00.000Z'; // Yesterday's mid-day or close
+            } else {
+                // Market is open or post-market: Fetch from today's open to now
+                from_date = todayStr + 'T03:45:00.000Z';
+                // Use now but subtract a minute to be safe with server time diff
+                to_date = new Date(now.getTime() - 60000).toISOString();
+            }
+
+            // Safety check: ensure from_date < to_date
+            if (new Date(from_date) >= new Date(to_date)) {
+                // Return early or use a fallback
+                console.log("Skipping historical fetch: from_date >= to_date", { from_date, to_date });
+                return;
+            }
+
+            console.log("Fetching Live Nifty Historical:", { from_date, to_date });
+
             const res = await breezeApi.getHistorical({
                 stock_code: 'NIFTY',
                 exchange_code: 'NSE',
                 product_type: 'cash',
                 interval: '1minute',
-                from_date: today + 'T09:00:00.000Z',
-                to_date: today + 'T16:00:00.000Z'
+                from_date,
+                to_date
             });
             if (res.data) {
                 setLiveIndexData(res.data);
@@ -683,7 +718,7 @@ export default function OptionChainLive() {
 
     // Candlestick Chart Initialization
     useEffect(() => {
-        if (!chartContainerRef.current || (indexData.length === 0 && liveIndexData.length === 0)) return;
+        if (!chartContainerRef.current) return;
 
         const handleResize = () => {
             if (chartContainerRef.current && chartRef.current) {
@@ -692,6 +727,7 @@ export default function OptionChainLive() {
         };
 
         if (!chartRef.current) {
+            console.log("Initializing Lightweight Chart in container:", chartContainerRef.current);
             const chart = createChart(chartContainerRef.current, {
                 width: chartContainerRef.current.clientWidth,
                 height: 350,
@@ -1120,13 +1156,23 @@ export default function OptionChainLive() {
                         </div>
                         {!isChartCollapsed && (
                             <div style={{ padding: 16, borderTop: '1px solid var(--border-color)', position: 'relative' }}>
-                                {indexData.length === 0 && liveIndexData.length === 0 ? (
-                                    <div style={{ height: 350, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
-                                        {authStatus?.authenticated ? 'Fetching Live Nifty Data...' : 'Select Expiry to Load Data...'}
-                                    </div>
-                                ) : (
-                                    <div ref={chartContainerRef} style={{ width: '100%', height: 350 }} />
-                                )}
+                                <div ref={chartContainerRef} style={{ width: '100%', height: 350, position: 'relative' }}>
+                                    {(indexData.length === 0 && liveIndexData.length === 0) && (
+                                        <div style={{ 
+                                            position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, 
+                                            display: 'flex', alignItems: 'center', justifyContent: 'center', 
+                                            color: 'var(--text-muted)', background: 'rgba(0,0,0,0.1)',
+                                            zIndex: 10, borderRadius: 8
+                                        }}>
+                                            {authStatus?.authenticated ? (
+                                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+                                                    <div className="spinner-small" />
+                                                    <span>Initializing Live Nifty Chart...</span>
+                                                </div>
+                                            ) : 'Select Expiry to Load Data...'}
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         )}
                     </div>
