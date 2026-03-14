@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { createChart, ColorType, CrosshairMode, CandlestickSeries } from 'lightweight-charts';
-import { dataApi, aiApi } from '../api/client';
+import { dataApi, aiApi, backtestApi } from '../api/client';
 import { useDataStore } from '../stores/appStore';
 import ReactMarkdown from 'react-markdown';
 import { BarChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ComposedChart } from 'recharts';
@@ -46,6 +46,24 @@ export default function OptionChainExplorer() {
     const [isOptionsLoading, setIsOptionsLoading] = useState(false);
     const [mrReport, setMrReport] = useState<any | null>(null);
     const [isReportLoading, setIsReportLoading] = useState(false);
+
+    // Multi-Expiry Mean Reversion Backtest States
+    const [mrMultiLoading, setMrMultiLoading] = useState(false);
+    const [mrMultiResult, setMrMultiResult] = useState<any | null>(null);
+    const [mrMultiModalOpen, setMrMultiModalOpen] = useState(false);
+    const [mrMultiSelectedExpiry, setMrMultiSelectedExpiry] = useState<string | null>(null);
+    const [mrNumExpiries, setMrNumExpiries] = useState(10);
+    const [mrNumLots, setMrNumLots] = useState(1);
+    const [mrInitialBudget, setMrInitialBudget] = useState(100000);
+    // Sweep filter state
+    const [swpFilterWindow, setSwpFilterWindow] = useState('');
+    const [swpFilterEntryZ, setSwpFilterEntryZ] = useState('');
+    const [swpFilterExitZ, setSwpFilterExitZ] = useState('');
+    const [swpFilterStopZ, setSwpFilterStopZ] = useState('');
+    const [swpFilterMinWinRate, setSwpFilterMinWinRate] = useState('');
+    const [swpFilterMinPnl, setSwpFilterMinPnl] = useState('');
+    const [swpFilterMinPF, setSwpFilterMinPF] = useState('');
+    const [swpFilterOnlyProfit, setSwpFilterOnlyProfit] = useState(false);
 
     // New States for Time Stepper
     const [timestamps, setTimestamps] = useState<string[]>([]);
@@ -1132,6 +1150,31 @@ export default function OptionChainExplorer() {
         setIsReportLoading(false);
     };
 
+    // ── Test Mean Reversion Strategy Across Last 10 Expiries ──────────────────
+    const runMeanReversionMultiBacktest = async () => {
+        setMrMultiLoading(true);
+        setMrMultiModalOpen(true);
+        setMrMultiResult(null);
+        setMrMultiSelectedExpiry(null);
+        try {
+            const result = await backtestApi.runMeanReversion({
+                window: mrWindow,
+                entry_z: mrEntryZ,
+                exit_z: mrExitZ,
+                stop_z: mrStopZ,
+                trading_hours_only: mrTradingHoursOnly,
+                num_expiries: mrNumExpiries,
+                num_lots: mrNumLots,
+                initial_budget: mrInitialBudget,
+            });
+            setMrMultiResult(result);
+        } catch (e: any) {
+            console.error("MR multi-expiry backtest failed:", e);
+            setMrMultiResult({ error: e.message || "Backtest failed" });
+        }
+        setMrMultiLoading(false);
+    };
+
     // Prepare Z-Score chart data (sampled to avoid rendering thousands of points)
     const zScoreChartData = useMemo(() => {
         if (zScoreSeries.length === 0) return [];
@@ -1908,14 +1951,63 @@ export default function OptionChainExplorer() {
                                                 <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>Trades Report Analysis</div>
                                                 <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Analyze strategy performance across multiple Entry Z thresholds</div>
                                             </div>
-                                            <button 
-                                                className="btn" 
-                                                onClick={generateTradesReport}
-                                                disabled={isReportLoading}
-                                                style={{ padding: '6px 12px', fontSize: 11, background: 'linear-gradient(90deg, #A855F7, #3B82F6)', color: 'white', border: 'none', borderRadius: 4, display: 'flex', alignItems: 'center', gap: 6 }}
-                                            >
-                                                {isReportLoading ? <div className="spinner-small" /> : 'Generate Trades Report'}
-                                            </button>
+                                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
+                                                    <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>Expiries:</span>
+                                                    <select
+                                                        value={mrNumExpiries}
+                                                        onChange={e => setMrNumExpiries(Number(e.target.value))}
+                                                        style={{ height: 28, padding: '0 6px', width: 64, fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)', cursor: 'pointer' }}
+                                                    >
+                                                        {[5, 10, 15, 20, 30].map(v => <option key={v} value={v}>{v}</option>)}
+                                                    </select>
+                                                </div>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
+                                                    <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>Lots:</span>
+                                                    <input
+                                                        type="number"
+                                                        min={0}
+                                                        value={mrNumLots}
+                                                        onChange={e => setMrNumLots(Math.max(0, Number(e.target.value) || 0))}
+                                                        style={{ height: 28, padding: '0 6px', width: 56, fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)', textAlign: 'center' }}
+                                                    />
+                                                </div>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
+                                                    <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>Budget ₹:</span>
+                                                    <input
+                                                        type="number"
+                                                        min={1000}
+                                                        step={10000}
+                                                        value={mrInitialBudget}
+                                                        onChange={e => setMrInitialBudget(Math.max(1000, Number(e.target.value) || 100000))}
+                                                        style={{ height: 28, padding: '0 6px', width: 96, fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)', textAlign: 'right' }}
+                                                    />
+                                                </div>
+                                                <button
+                                                    className="btn"
+                                                    onClick={runMeanReversionMultiBacktest}
+                                                    disabled={mrMultiLoading}
+                                                    style={{
+                                                        padding: '6px 14px', fontSize: 11,
+                                                        background: 'linear-gradient(90deg, #10b981, #3B82F6)',
+                                                        color: 'white', border: 'none', borderRadius: 4,
+                                                        display: 'flex', alignItems: 'center', gap: 6,
+                                                        fontWeight: 700, cursor: mrMultiLoading ? 'not-allowed' : 'pointer'
+                                                    }}
+                                                >
+                                                    {mrMultiLoading
+                                                        ? <><div className="spinner-small" /> Running...</>
+                                                        : `🔬 Test Mean Reversion Strategy`}
+                                                </button>
+                                                <button 
+                                                    className="btn" 
+                                                    onClick={generateTradesReport}
+                                                    disabled={isReportLoading}
+                                                    style={{ padding: '6px 12px', fontSize: 11, background: 'linear-gradient(90deg, #A855F7, #3B82F6)', color: 'white', border: 'none', borderRadius: 4, display: 'flex', alignItems: 'center', gap: 6 }}
+                                                >
+                                                    {isReportLoading ? <div className="spinner-small" /> : 'Generate Trades Report'}
+                                                </button>
+                                            </div>
                                         </div>
 
                                         {mrReport && (
@@ -2454,6 +2546,482 @@ export default function OptionChainExplorer() {
                     }}
                 >
                     💡 Insight: {oiCommentary.sentiment}
+                </div>
+            )}
+
+            {/* ────── Mean Reversion Multi-Expiry Backtest Modal ────── */}
+            {mrMultiModalOpen && (
+                <div
+                    style={{
+                        position: 'fixed', inset: 0, zIndex: 3000,
+                        background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(6px)',
+                        display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+                        paddingTop: 32, paddingBottom: 32, overflowY: 'auto'
+                    }}
+                    onClick={e => { if (e.target === e.currentTarget) setMrMultiModalOpen(false); }}
+                >
+                    <div style={{
+                        width: '96%', maxWidth: 1200,
+                        background: 'var(--bg-secondary)',
+                        borderRadius: 16,
+                        border: '1px solid rgba(16,185,129,0.3)',
+                        boxShadow: '0 40px 80px rgba(0,0,0,0.6)',
+                        overflow: 'hidden',
+                    }}>
+                        {/* Modal Header */}
+                        <div style={{
+                            padding: '16px 24px',
+                            borderBottom: '1px solid var(--border-color)',
+                            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                            background: 'linear-gradient(90deg, rgba(16,185,129,0.08), rgba(59,130,246,0.08))'
+                        }}>
+                            <div>
+                                <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    🔬 Test Mean Reversion Strategy — Last {mrMultiResult?.params?.num_expiries ?? 10} Expiries
+                                </div>
+                                {mrMultiResult?.params && (
+                                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, display: 'flex', gap: 16 }}>
+                                        <span>Window: <strong>{mrMultiResult.params.window}</strong></span>
+                                        <span>Entry Z: <strong>±{mrMultiResult.params.entry_z}</strong></span>
+                                        <span>Exit Z: <strong>{mrMultiResult.params.exit_z}</strong></span>
+                                        <span>Stop Z: <strong>±{mrMultiResult.params.stop_z}</strong></span>
+                                        <span>Trading Hours: <strong>{mrMultiResult.params.trading_hours_only ? 'Yes' : 'No'}</strong></span>
+                                        {mrMultiResult.params.auto_lots
+                                            ? <span>Lots: <strong>Auto (Budget ₹{mrMultiResult.params.initial_budget?.toLocaleString()})</strong></span>
+                                            : <span>Lots: <strong>{mrMultiResult.params.num_lots} × {mrMultiResult.params.lot_size} = {mrMultiResult.params.num_lots * mrMultiResult.params.lot_size} units</strong></span>
+                                        }
+                                        {mrMultiResult.time_ms && <span style={{ color: 'var(--text-muted)' }}>⏱ {mrMultiResult.time_ms}ms</span>}
+                                    </div>
+                                )}
+                            </div>
+                            <button
+                                onClick={() => setMrMultiModalOpen(false)}
+                                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 22, lineHeight: 1, padding: '4px 8px' }}
+                            >×</button>
+                        </div>
+
+                        <div style={{ padding: 24 }}>
+                            {/* Loading */}
+                            {mrMultiLoading && (
+                                <div style={{ textAlign: 'center', padding: '60px 20px' }}>
+                                    <div className="spinner" style={{ margin: '0 auto 20px', width: 44, height: 44, borderColor: 'rgba(16,185,129,0.2)', borderTopColor: '#10b981' }} />
+                                    <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-muted)' }}>Running parameter sweep across last {mrNumExpiries} expiries...</div>
+                                    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>Loading index data, computing Z-scores and fetching option prices</div>
+                                </div>
+                            )}
+
+                            {/* Error */}
+                            {!mrMultiLoading && mrMultiResult?.error && (
+                                <div style={{ padding: 24, textAlign: 'center', color: 'var(--red)' }}>
+                                    <div style={{ fontSize: 24, marginBottom: 12 }}>⚠</div>
+                                    <div style={{ fontWeight: 700 }}>{mrMultiResult.error}</div>
+                                </div>
+                            )}
+
+                            {/* Results */}
+                            {!mrMultiLoading && mrMultiResult && !mrMultiResult.error && (
+                                <>
+                                    {/* ── Parameter Sweep Section ── */}
+                                    {mrMultiResult.param_sweep && mrMultiResult.param_sweep.length > 0 && (() => {
+                                        const best = mrMultiResult.param_sweep[0];
+                                        const bestPnlPos = best.total_pnl >= 0;
+                                        return (
+                                            <div style={{ marginBottom: 24 }}>
+                                                {/* Best Combo Banner */}
+                                                <div style={{
+                                                    padding: '14px 18px', marginBottom: 12,
+                                                    background: bestPnlPos ? 'rgba(234,179,8,0.08)' : 'rgba(239,68,68,0.06)',
+                                                    border: `1px solid ${bestPnlPos ? 'rgba(234,179,8,0.45)' : 'rgba(239,68,68,0.3)'}`,
+                                                    borderRadius: 10, display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap'
+                                                }}>
+                                                    <span style={{ fontSize: 20 }}>🏆</span>
+                                                    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
+                                                        Best Combination
+                                                    </div>
+                                                    {[
+                                                        { label: 'Window', value: best.window },
+                                                        { label: 'Entry Z', value: `±${best.entry_z}` },
+                                                        { label: 'Exit Z', value: best.exit_z },
+                                                        { label: 'Stop Z', value: `±${best.stop_z}` },
+                                                        { label: 'Trades', value: best.total_trades },
+                                                        { label: 'Win Rate', value: `${best.win_rate}%` },
+                                                        { label: 'Total P&L', value: `${best.total_pnl >= 0 ? '+' : ''}${best.total_pnl}`, color: bestPnlPos ? 'var(--green)' : 'var(--red)', bold: true },
+                                                        { label: 'Profit Factor', value: best.profit_factor != null ? best.profit_factor : '—' },
+                                                        { label: 'Sharpe', value: best.sharpe },
+                                                    ].map((item, i) => (
+                                                        <div key={i} style={{ textAlign: 'center' }}>
+                                                            <div style={{ fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>{item.label}</div>
+                                                            <div style={{ fontSize: 15, fontWeight: item.bold ? 900 : 700, color: item.color ?? 'var(--text-primary)' }}>{item.value}</div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+
+                                                {/* Full sweep table */}
+                                                <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>
+                                                    Parameter Sweep — All {mrMultiResult.param_sweep.length} Combinations (sorted by Total P&L)
+                                                </div>
+
+                                                {/* Filter Controls */}
+                                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10, padding: '10px 12px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8 }}>
+                                                    <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', width: '100%', marginBottom: 2 }}>Filters</div>
+                                                    {([
+                                                        { label: 'Window', val: swpFilterWindow, set: setSwpFilterWindow, ph: 'e.g. 20', w: 72 },
+                                                        { label: 'Entry Z', val: swpFilterEntryZ, set: setSwpFilterEntryZ, ph: 'e.g. 2.0', w: 72 },
+                                                        { label: 'Exit Z', val: swpFilterExitZ, set: setSwpFilterExitZ, ph: 'e.g. 0.5', w: 72 },
+                                                        { label: 'Stop Z', val: swpFilterStopZ, set: setSwpFilterStopZ, ph: 'e.g. 3.5', w: 72 },
+                                                        { label: 'Min Win%', val: swpFilterMinWinRate, set: setSwpFilterMinWinRate, ph: 'e.g. 50', w: 76 },
+                                                        { label: 'Min P&L', val: swpFilterMinPnl, set: setSwpFilterMinPnl, ph: 'e.g. 1000', w: 88 },
+                                                        { label: 'Min PF', val: swpFilterMinPF, set: setSwpFilterMinPF, ph: 'e.g. 1.5', w: 72 },
+                                                    ] as { label: string; val: string; set: (v: string) => void; ph: string; w: number }[]).map(f => (
+                                                        <div key={f.label} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                                            <span style={{ fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>{f.label}</span>
+                                                            <input
+                                                                type="number"
+                                                                placeholder={f.ph}
+                                                                value={f.val}
+                                                                onChange={e => f.set(e.target.value)}
+                                                                style={{ height: 26, padding: '0 6px', width: f.w, fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+                                                            />
+                                                        </div>
+                                                    ))}
+                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, justifyContent: 'flex-end' }}>
+                                                        <span style={{ fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Profitable Only</span>
+                                                        <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', height: 26 }}>
+                                                            <input type="checkbox" checked={swpFilterOnlyProfit} onChange={e => setSwpFilterOnlyProfit(e.target.checked)} />
+                                                            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Yes</span>
+                                                        </label>
+                                                    </div>
+                                                    <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+                                                        <button
+                                                            onClick={() => { setSwpFilterWindow(''); setSwpFilterEntryZ(''); setSwpFilterExitZ(''); setSwpFilterStopZ(''); setSwpFilterMinWinRate(''); setSwpFilterMinPnl(''); setSwpFilterMinPF(''); setSwpFilterOnlyProfit(false); }}
+                                                            style={{ height: 26, padding: '0 10px', fontSize: 10, borderRadius: 4, border: '1px solid var(--border)', background: 'rgba(239,68,68,0.1)', color: 'var(--red)', cursor: 'pointer', fontWeight: 700 }}
+                                                        >Clear</button>
+                                                    </div>
+                                                </div>
+
+                                                {/* Filtered & displayed sweep rows */}
+                                                {(() => {
+                                                    const rows: any[] = mrMultiResult.param_sweep.filter((ps: any) => {
+                                                        if (swpFilterWindow    !== '' && Number(ps.window)   !== Number(swpFilterWindow))   return false;
+                                                        if (swpFilterEntryZ    !== '' && Number(ps.entry_z)  !== Number(swpFilterEntryZ))   return false;
+                                                        if (swpFilterExitZ     !== '' && Number(ps.exit_z)   !== Number(swpFilterExitZ))    return false;
+                                                        if (swpFilterStopZ     !== '' && Number(ps.stop_z)   !== Number(swpFilterStopZ))    return false;
+                                                        if (swpFilterMinWinRate !== '' && ps.win_rate < Number(swpFilterMinWinRate))        return false;
+                                                        if (swpFilterMinPnl    !== '' && ps.total_pnl < Number(swpFilterMinPnl))           return false;
+                                                        if (swpFilterMinPF     !== '' && (ps.profit_factor == null || ps.profit_factor < Number(swpFilterMinPF))) return false;
+                                                        if (swpFilterOnlyProfit && ps.total_pnl <= 0)                                      return false;
+                                                        return true;
+                                                    });
+                                                    return (
+                                                        <div>
+                                                            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 6 }}>Showing {rows.length} of {mrMultiResult.param_sweep.length} combinations</div>
+                                                            <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: 8 }}>
+                                                                <table className="option-chain-table" style={{ fontSize: 11 }}>
+                                                                    <thead style={{ position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg-secondary)' }}>
+                                                                        <tr>
+                                                                            <th style={{ textAlign: 'center' }}>#</th>
+                                                                            <th style={{ textAlign: 'center' }}>Window</th>
+                                                                            <th style={{ textAlign: 'center' }}>Entry Z</th>
+                                                                            <th style={{ textAlign: 'center' }}>Exit Z</th>
+                                                                            <th style={{ textAlign: 'center' }}>Stop Z</th>
+                                                                            <th style={{ textAlign: 'center' }}>Trades</th>
+                                                                            <th style={{ textAlign: 'right' }}>Win Rate</th>
+                                                                            <th style={{ textAlign: 'right' }}>Total P&L</th>
+                                                                            <th style={{ textAlign: 'right' }}>Profit Factor</th>
+                                                                            <th style={{ textAlign: 'right' }}>Max DD</th>
+                                                                            <th style={{ textAlign: 'right' }}>Sharpe</th>
+                                                                        </tr>
+                                                                    </thead>
+                                                                    <tbody>
+                                                                        {rows.map((ps: any, pi: number) => {
+                                                                            const pPos = ps.total_pnl >= 0;
+                                                                            const isTop = pi === 0;
+                                                                            return (
+                                                                                <tr key={`${ps.window}_${ps.entry_z}_${ps.exit_z}_${ps.stop_z}`} style={{
+                                                                                    background: isTop ? 'rgba(234,179,8,0.07)' : 'inherit',
+                                                                                    borderLeft: isTop ? '3px solid rgba(234,179,8,0.6)' : '3px solid transparent',
+                                                                                }}>
+                                                                                    <td style={{ textAlign: 'center', color: isTop ? 'rgb(234,179,8)' : 'var(--text-muted)', fontWeight: isTop ? 800 : 400 }}>{pi + 1}</td>
+                                                                                    <td style={{ textAlign: 'center', fontWeight: 600 }}>{ps.window}</td>
+                                                                                    <td style={{ textAlign: 'center', fontWeight: 700 }}>±{ps.entry_z}</td>
+                                                                                    <td style={{ textAlign: 'center' }}>{ps.exit_z}</td>
+                                                                                    <td style={{ textAlign: 'center' }}>±{ps.stop_z}</td>
+                                                                                    <td style={{ textAlign: 'center' }}>{ps.total_trades}</td>
+                                                                                    <td style={{ textAlign: 'right', color: ps.win_rate >= 50 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>{ps.win_rate}%</td>
+                                                                                    <td style={{ textAlign: 'right', fontWeight: 800, color: pPos ? 'var(--green)' : 'var(--red)' }}>{pPos ? '+' : ''}{ps.total_pnl}</td>
+                                                                                    <td style={{ textAlign: 'right', color: ps.profit_factor != null && ps.profit_factor >= 1.5 ? 'var(--green)' : 'var(--text-muted)' }}>{ps.profit_factor ?? '—'}</td>
+                                                                                    <td style={{ textAlign: 'right', color: 'var(--red)' }}>{ps.max_drawdown}</td>
+                                                                                    <td style={{ textAlign: 'right', color: ps.sharpe > 0 ? 'var(--green)' : 'var(--text-muted)' }}>{ps.sharpe}</td>
+                                                                                </tr>
+                                                                            );
+                                                                        })}
+                                                                    </tbody>
+                                                                </table>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })()}
+                                            </div>
+                                        );
+                                    })()}
+
+                                    {/* ── Summary Card ── */}
+                                    {mrMultiResult.summary && (() => {
+                                        const s = mrMultiResult.summary;
+                                        const pnlPositive = s.total_pnl >= 0;
+                                        return (
+                                            <div style={{
+                                                marginBottom: 24, padding: '20px',
+                                                background: pnlPositive ? 'rgba(16,185,129,0.06)' : 'rgba(239,68,68,0.06)',
+                                                border: `1px solid ${pnlPositive ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'}`,
+                                                borderRadius: 12
+                                            }}>
+                                                <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 16 }}>
+                                                    Consolidated Summary
+                                                </div>
+                                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
+                                                    {[
+                                                        { label: 'Total P&L', value: `${pnlPositive ? '+' : ''}${s.total_pnl}`, color: pnlPositive ? 'var(--green)' : 'var(--red)', big: true },
+                                                        { label: 'Win Rate', value: `${s.win_rate}%`, color: s.win_rate >= 50 ? 'var(--green)' : 'var(--red)', big: true },
+                                                        { label: 'Profit Factor', value: s.profit_factor != null ? s.profit_factor : '—', color: s.profit_factor != null && s.profit_factor >= 1.5 ? 'var(--green)' : 'var(--yellow)', big: true },
+                                                        { label: 'Total Trades', value: s.total_trades, color: 'var(--text-primary)', big: true },
+                                                    ].map((m, i) => (
+                                                        <div key={i} style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '14px 16px', border: '1px solid rgba(255,255,255,0.06)', textAlign: 'center' }}>
+                                                            <div style={{ fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700, marginBottom: 8 }}>{m.label}</div>
+                                                            <div style={{ fontSize: 22, fontWeight: 900, color: m.color }}>{m.value}</div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+                                                    {[
+                                                        { label: 'Profitable Expiries', value: `${s.profitable_expiries} / ${s.total_expiries}`, color: 'var(--text-primary)' },
+                                                        { label: 'Wins / Losses', value: `${s.total_wins} / ${s.total_losses}`, color: 'var(--text-muted)' },
+                                                        { label: 'Gross Profit', value: `+${s.gross_profit}`, color: 'var(--green)' },
+                                                        { label: 'Gross Loss', value: `-${s.gross_loss}`, color: 'var(--red)' },
+                                                    ].map((m, i) => (
+                                                        <div key={i} style={{ background: 'rgba(255,255,255,0.02)', borderRadius: 8, padding: '10px 12px', border: '1px solid rgba(255,255,255,0.04)', textAlign: 'center' }}>
+                                                            <div style={{ fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600, marginBottom: 4 }}>{m.label}</div>
+                                                            <div style={{ fontSize: 14, fontWeight: 700, color: m.color }}>{m.value}</div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                                {s.final_capital != null && (
+                                                    <div style={{ marginTop: 12, display: 'flex', gap: 20, fontSize: 11, padding: '8px 12px', background: 'rgba(255,255,255,0.03)', borderRadius: 8, border: '1px solid rgba(255,255,255,0.05)' }}>
+                                                        <span style={{ color: 'var(--text-muted)' }}>Initial Budget: <strong style={{ color: 'var(--text-primary)' }}>₹{s.initial_budget?.toLocaleString()}</strong></span>
+                                                        <span style={{ color: s.final_capital >= s.initial_budget ? 'var(--green)' : 'var(--red)' }}>Final Capital: <strong>₹{s.final_capital?.toLocaleString()}</strong></span>
+                                                        <span style={{ color: s.final_capital >= s.initial_budget ? 'var(--green)' : 'var(--red)', fontWeight: 800 }}>ROI: <strong>{s.initial_budget > 0 ? `${((s.final_capital - s.initial_budget) / s.initial_budget * 100).toFixed(1)}%` : '—'}</strong></span>
+                                                    </div>
+                                                )}
+                                                {(s.best_expiry || s.worst_expiry) && (
+                                                    <div style={{ marginTop: 12, display: 'flex', gap: 12, fontSize: 11 }}>
+                                                        {s.best_expiry && (
+                                                            <span style={{ color: 'var(--green)' }}>
+                                                                🏆 Best: <strong>{s.best_expiry.date}</strong> (+{s.best_expiry.pnl})
+                                                            </span>
+                                                        )}
+                                                        {s.worst_expiry && (
+                                                            <span style={{ color: 'var(--red)' }}>
+                                                                ⚠ Worst: <strong>{s.worst_expiry.date}</strong> ({s.worst_expiry.pnl})
+                                                            </span>
+                                                        )}
+                                                        <span style={{ color: 'var(--text-muted)' }}>
+                                                            Avg P&L/Expiry: <strong style={{ color: s.avg_pnl_per_expiry >= 0 ? 'var(--green)' : 'var(--red)' }}>{s.avg_pnl_per_expiry >= 0 ? '+' : ''}{s.avg_pnl_per_expiry}</strong>
+                                                        </span>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })()}
+
+                                    {/* ── Per-Expiry Table ── */}
+                                    {mrMultiResult.results && (
+                                        <div>
+                                            <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>
+                                                Per-Expiry Results — click a row to see trades
+                                            </div>
+                                            <div className="table-container" style={{ marginBottom: 20 }}>
+                                                <table className="option-chain-table">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>#</th>
+                                                            <th>Expiry</th>
+                                                            <th style={{ textAlign: 'center' }}>Trades</th>
+                                                            <th style={{ textAlign: 'center' }}>W / L</th>
+                                                            <th style={{ textAlign: 'right' }}>Win Rate</th>
+                                                            <th style={{ textAlign: 'right' }}>Total P&L</th>
+                                                            <th style={{ textAlign: 'right' }}>Profit Factor</th>
+                                                            <th style={{ textAlign: 'right' }}>Max DD</th>
+                                                            <th style={{ textAlign: 'right' }}>Sharpe</th>
+                                                            <th style={{ textAlign: 'center' }}>Status</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {mrMultiResult.results.map((r: any, idx: number) => {
+                                                            const m = r.metrics;
+                                                            const hasError = !!r.error;
+                                                            const selected = mrMultiSelectedExpiry === r.expiry;
+                                                            return (
+                                                                <tr
+                                                                    key={idx}
+                                                                    onClick={() => setMrMultiSelectedExpiry(selected ? null : r.expiry)}
+                                                                    style={{
+                                                                        cursor: 'pointer',
+                                                                        background: selected ? 'rgba(16,185,129,0.08)' : 'inherit',
+                                                                        borderLeft: selected ? '3px solid #10b981' : '3px solid transparent',
+                                                                    }}
+                                                                >
+                                                                    <td style={{ color: 'var(--text-muted)', fontSize: 10 }}>{idx + 1}</td>
+                                                                    <td>
+                                                                        <div style={{ fontWeight: 700, fontSize: 12 }}>{r.expiry_date || r.expiry}</div>
+                                                                        <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>{r.expiry}</div>
+                                                                    </td>
+                                                                    <td style={{ textAlign: 'center' }}>{hasError ? '—' : (m?.total_trades ?? 0)}</td>
+                                                                    <td style={{ textAlign: 'center', fontSize: 11 }}>
+                                                                        {hasError ? '—' : (
+                                                                            <span>
+                                                                                <strong style={{ color: 'var(--green)' }}>{m?.wins ?? 0}</strong>
+                                                                                <span style={{ color: 'var(--text-muted)' }}> / </span>
+                                                                                <strong style={{ color: 'var(--red)' }}>{m?.losses ?? 0}</strong>
+                                                                            </span>
+                                                                        )}
+                                                                    </td>
+                                                                    <td style={{ textAlign: 'right', color: m?.win_rate >= 50 ? 'var(--green)' : 'var(--red)', fontWeight: 700 }}>
+                                                                        {hasError ? '—' : `${m?.win_rate ?? 0}%`}
+                                                                    </td>
+                                                                    <td style={{ textAlign: 'right', fontWeight: 800, color: m?.total_pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                                                                        {hasError ? '—' : `${m?.total_pnl >= 0 ? '+' : ''}${m?.total_pnl ?? 0}`}
+                                                                    </td>
+                                                                    <td style={{ textAlign: 'right', color: m?.profit_factor != null && m.profit_factor >= 1.5 ? 'var(--green)' : 'var(--yellow)' }}>
+                                                                        {hasError ? '—' : (m?.profit_factor != null ? m.profit_factor : '—')}
+                                                                    </td>
+                                                                    <td style={{ textAlign: 'right', color: 'var(--red)' }}>
+                                                                        {hasError ? '—' : `-${m?.max_drawdown ?? 0}`}
+                                                                    </td>
+                                                                    <td style={{ textAlign: 'right', color: m?.sharpe >= 1.5 ? 'var(--green)' : m?.sharpe >= 0 ? 'var(--yellow)' : 'var(--red)' }}>
+                                                                        {hasError ? '—' : (m?.sharpe ?? 0)}
+                                                                    </td>
+                                                                    <td style={{ textAlign: 'center' }}>
+                                                                        {hasError ? (
+                                                                            <span style={{ fontSize: 9, color: 'var(--red)', background: 'rgba(239,68,68,0.1)', padding: '2px 6px', borderRadius: 4 }} title={r.error}>Error</span>
+                                                                        ) : m?.total_trades === 0 ? (
+                                                                            <span style={{ fontSize: 9, color: 'var(--text-muted)', background: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: 4 }}>No Trades</span>
+                                                                        ) : m?.total_pnl > 0 ? (
+                                                                            <span style={{ fontSize: 9, color: 'var(--green)', background: 'rgba(16,185,129,0.1)', padding: '2px 6px', borderRadius: 4 }}>Profitable</span>
+                                                                        ) : (
+                                                                            <span style={{ fontSize: 9, color: 'var(--red)', background: 'rgba(239,68,68,0.1)', padding: '2px 6px', borderRadius: 4 }}>Loss</span>
+                                                                        )}
+                                                                    </td>
+                                                                </tr>
+                                                            );
+                                                        })}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+
+                                            {/* ── Expanded Trade Detail for Selected Expiry ── */}
+                                            {mrMultiSelectedExpiry && (() => {
+                                                const sel = mrMultiResult.results.find((r: any) => r.expiry === mrMultiSelectedExpiry);
+                                                if (!sel || sel.trades.length === 0) return (
+                                                    <div style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
+                                                        {sel?.error ? `Error: ${sel.error}` : 'No trades for this expiry.'}
+                                                    </div>
+                                                );
+                                                return (
+                                                    <div className="fade-in" style={{ marginTop: 8 }}>
+                                                        <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                            <span>Trade Details — {sel.expiry_date || sel.expiry} ({sel.trades.length} trades)</span>
+                                                            {sel.metrics && (
+                                                                <span style={{ fontSize: 11, color: sel.metrics.total_pnl >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 700 }}>
+                                                                    P&L: {sel.metrics.total_pnl >= 0 ? '+' : ''}{sel.metrics.total_pnl} | WR: {sel.metrics.win_rate}% | PF: {sel.metrics.profit_factor ?? '—'}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        <div className="table-container" style={{ maxHeight: 340, overflowY: 'auto' }}>
+                                                            <table className="option-chain-table">
+                                                                <thead>
+                                                                    <tr>
+                                                                        <th>#</th>
+                                                                        <th>Opt</th>
+                                                                        <th>Strike</th>
+                                                                        <th>Entry Time</th>
+                                                                        <th style={{ textAlign: 'right' }}>Entry Z</th>
+                                                                        <th style={{ textAlign: 'right' }}>Idx Entry</th>
+                                                                        <th style={{ textAlign: 'right' }}>Opt Entry</th>
+                                                                        <th>Exit Time</th>
+                                                                        <th style={{ textAlign: 'right' }}>Exit Z</th>
+                                                                        <th style={{ textAlign: 'right' }}>Idx Exit</th>
+                                                                        <th style={{ textAlign: 'right' }}>Opt Exit</th>
+                                                                        <th>Reason</th>
+                                                                        <th style={{ textAlign: 'center' }}>Lots</th>
+                                                                        <th style={{ textAlign: 'right' }}>Capital In</th>
+                                                                        <th style={{ textAlign: 'right' }}>Opt P&L</th>
+                                                                        <th style={{ textAlign: 'right' }}>Bars</th>
+                                                                    </tr>
+                                                                </thead>
+                                                                <tbody>
+                                                                    {sel.trades.map((t: any) => (
+                                                                        <tr key={t.num}>
+                                                                            <td style={{ color: 'var(--text-muted)', fontSize: 10 }}>{t.num}</td>
+                                                                            <td>
+                                                                                <span style={{
+                                                                                    fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4,
+                                                                                    background: t.option_type === 'CE' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
+                                                                                    color: t.option_type === 'CE' ? '#10b981' : '#ef4444'
+                                                                                }}>{t.option_type}</span>
+                                                                            </td>
+                                                                            <td style={{ fontWeight: 700, fontSize: 11 }}>{t.strike}</td>
+                                                                            <td style={{ fontSize: 10 }}>
+                                                                                <div>{t.entry_time}</div>
+                                                                            </td>
+                                                                            <td style={{ textAlign: 'right', fontSize: 10, color: t.entry_z < 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
+                                                                                {t.entry_z >= 0 ? '+' : ''}{t.entry_z}
+                                                                            </td>
+                                                                            <td style={{ textAlign: 'right', fontSize: 10, color: 'var(--text-muted)' }}>{t.entry_price}</td>
+                                                                            <td style={{ textAlign: 'right', fontWeight: 600 }}>
+                                                                                {t.opt_entry != null ? t.opt_entry : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                                                                            </td>
+                                                                            <td style={{ fontSize: 10 }}>
+                                                                                <div>{t.exit_time}</div>
+                                                                            </td>
+                                                                            <td style={{ textAlign: 'right', fontSize: 10, color: 'var(--text-muted)', fontWeight: 600 }}>
+                                                                                {t.exit_z >= 0 ? '+' : ''}{t.exit_z}
+                                                                            </td>
+                                                                            <td style={{ textAlign: 'right', fontSize: 10, color: 'var(--text-muted)' }}>{t.exit_price}</td>
+                                                                            <td style={{ textAlign: 'right', fontWeight: 600 }}>
+                                                                                {t.opt_exit != null ? t.opt_exit : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                                                                            </td>
+                                                                            <td>
+                                                                                <span style={{
+                                                                                    fontSize: 9, padding: '2px 6px', borderRadius: 4,
+                                                                                    background: t.exit_reason === 'Stop Loss' ? 'rgba(239,68,68,0.1)' : 'rgba(16,185,129,0.1)',
+                                                                                    color: t.exit_reason === 'Stop Loss' ? 'var(--red)' : 'var(--green)'
+                                                                                }}>{t.exit_reason}</span>
+                                                                            </td>
+                                                                            <td style={{ textAlign: 'center', fontSize: 10, fontWeight: 700, color: 'var(--purple)' }}>{t.lots ?? '—'}</td>
+                                                                            <td style={{ textAlign: 'right', fontSize: 10, color: 'var(--text-muted)' }}>
+                                                                                {t.capital_before != null ? `₹${t.capital_before.toLocaleString()}` : '—'}
+                                                                            </td>
+                                                                            <td style={{
+                                                                                textAlign: 'right', fontWeight: 800, fontSize: 12,
+                                                                                color: t.opt_pnl == null ? 'var(--text-muted)' : t.opt_pnl > 0 ? 'var(--green)' : t.opt_pnl < 0 ? 'var(--red)' : 'var(--text-muted)'
+                                                                            }}>
+                                                                                {t.opt_pnl != null ? `${t.opt_pnl > 0 ? '+' : ''}${t.opt_pnl}` : '—'}
+                                                                            </td>
+                                                                            <td style={{ textAlign: 'right', fontSize: 10, color: 'var(--text-muted)' }}>{t.duration_bars}</td>
+                                                                        </tr>
+                                                                    ))}
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })()}
+                                        </div>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                    </div>
                 </div>
             )}
         </div >

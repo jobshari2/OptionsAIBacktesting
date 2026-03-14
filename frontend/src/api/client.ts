@@ -85,6 +85,15 @@ export const backtestApi = {
     getTrades: (runId: string) => fetchJSON(`/api/backtest/trades/${runId}`),
     getAnimation: (data: any) =>
         fetchJSON('/api/backtest/animation', { method: 'POST', body: JSON.stringify(data) }),
+    runMeanReversion: (params: {
+        window: number;
+        entry_z: number;
+        exit_z: number;
+        stop_z: number;
+        trading_hours_only: boolean;
+        num_expiries: number;
+        use_unified?: boolean;
+    }) => fetchJSON('/api/backtest/mean-reversion', { method: 'POST', body: JSON.stringify(params) }),
 };
 
 // --- Analytics APIs ---
