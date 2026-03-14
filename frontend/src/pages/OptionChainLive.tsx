@@ -51,9 +51,9 @@ export default function OptionChainLive() {
     const [isAdvisorCollapsed, setIsAdvisorCollapsed] = useState(false);
 
     // New States for Time Stepper
-    const [timestamps, setTimestamps] = useState<string[]>([]);
+    const [timestamps, _setTimestamps] = useState<string[]>([]);
     const [currentIndex, setCurrentIndex] = useState(0);
-    const [stepMinutes, setStepMinutes] = useState(5);
+    const [stepMinutes, _setStepMinutes] = useState(5);
     const [isPlaying, setIsPlaying] = useState(false);
     const [trackedStrategy, setTrackedStrategy] = useState<any | null>(null);
     const [tradeHistory, setTradeHistory] = useState<any[]>([]);
@@ -65,9 +65,9 @@ export default function OptionChainLive() {
     const priceLinesRef = useRef<any[]>([]);
 
     // New States for Spot and Futures
-    const [indexData, setIndexLocalData] = useState<any[]>([]);
+    const [indexData, _setIndexLocalData] = useState<any[]>([]);
     const [liveIndexData, setLiveIndexData] = useState<any[]>([]);
-    const [futuresData, setFuturesLocalData] = useState<any[]>([]);
+    const [futuresData, _setFuturesLocalData] = useState<any[]>([]);
 
     // Helper to parse timestamps to Unix Timestamp (seconds) in IST for chart display
     const parseTimestamp = (ts: string) => {
@@ -170,7 +170,6 @@ export default function OptionChainLive() {
                 },
                 (err) => {
                     console.error("Breeze WS Error:", err);
-                    setWsError(err);
                     setWsConnected(false);
                 },
                 () => {
@@ -493,26 +492,18 @@ export default function OptionChainLive() {
         }
         setStepping(false);
     }
-
+    /* handleStepBackward: not used in Live screen
     const handleStepBackward = () => {
         if (timestamps.length === 0 || currentIndex === 0) return;
-
         let targetUnix = parseTimestamp(timestamps[currentIndex]) - (stepMinutes * 60);
-
-        // Find closest timestamp before or exact
         let newIdx = currentIndex;
         for (let i = currentIndex - 1; i >= 0; i--) {
-            if (parseTimestamp(timestamps[i]) <= targetUnix) {
-                newIdx = i;
-                break;
-            }
-            if (i === 0) newIdx = 0; // fallback to start
+            if (parseTimestamp(timestamps[i]) <= targetUnix) { newIdx = i; break; }
+            if (i === 0) newIdx = 0;
         }
-        if (newIdx !== currentIndex) {
-            setCurrentIndex(newIdx);
-            loadChainAtTime(timestamps[newIdx]);
-        }
+        if (newIdx !== currentIndex) { setCurrentIndex(newIdx); loadChainAtTime(timestamps[newIdx]); }
     };
+    */
 
     const handleStepForward = () => {
         if (timestamps.length === 0 || currentIndex === timestamps.length - 1) return;
@@ -534,75 +525,10 @@ export default function OptionChainLive() {
         }
     };
 
-    const handleNextDay = () => {
-        if (timestamps.length === 0) return;
-        const currentTS = timestamps[currentIndex];
-        const [currDate, currTime] = currentTS.split(' ');
-
-        // Find next unique date
-        const allDates = [...new Set(timestamps.map(ts => ts.split(' ')[0]))];
-        const currDateIdx = allDates.indexOf(currDate);
-
-        if (currDateIdx < allDates.length - 1) {
-            const nextDate = allDates[currDateIdx + 1];
-            // Find same time on next date or closest
-            let bestIdx = currentIndex;
-
-            for (let i = 0; i < timestamps.length; i++) {
-                const [d, t] = timestamps[i].split(' ');
-                if (d === nextDate) {
-                    // Try to match time exactly or closest
-                    if (t === currTime) {
-                        bestIdx = i;
-                        break;
-                    }
-                }
-            }
-            // If exact time not found, just pick first timestamp of that day as fallback
-            if (timestamps[bestIdx].split(' ')[0] !== nextDate) {
-                bestIdx = timestamps.findIndex(ts => ts.startsWith(nextDate));
-            }
-
-            if (bestIdx !== -1 && bestIdx !== currentIndex) {
-                setCurrentIndex(bestIdx);
-                loadChainAtTime(timestamps[bestIdx]);
-            }
-        }
-    };
-
-    const handlePrevDay = () => {
-        if (timestamps.length === 0) return;
-        const currentTS = timestamps[currentIndex];
-        const [currDate, currTime] = currentTS.split(' ');
-
-        // Find prev unique date
-        const allDates = [...new Set(timestamps.map(ts => ts.split(' ')[0]))];
-        const currDateIdx = allDates.indexOf(currDate);
-
-        if (currDateIdx > 0) {
-            const prevDate = allDates[currDateIdx - 1];
-            // Find same time on prev date or closest
-            let bestIdx = currentIndex;
-
-            for (let i = 0; i < timestamps.length; i++) {
-                const [d, t] = timestamps[i].split(' ');
-                if (d === prevDate) {
-                    if (t === currTime) {
-                        bestIdx = i;
-                        break;
-                    }
-                }
-            }
-            if (timestamps[bestIdx].split(' ')[0] !== prevDate) {
-                bestIdx = timestamps.findIndex(ts => ts.startsWith(prevDate));
-            }
-
-            if (bestIdx !== -1 && bestIdx !== currentIndex) {
-                setCurrentIndex(bestIdx);
-                loadChainAtTime(timestamps[bestIdx]);
-            }
-        }
-    };
+    /* handleNextDay/handlePrevDay: not used in Live screen
+    const handleNextDay = () => { ... };
+    const handlePrevDay = () => { ... };
+    */
 
     // Derived values for the current timestamp
     const currentTimestamp = timestamps[currentIndex] || '';
@@ -665,8 +591,8 @@ export default function OptionChainLive() {
         };
     }, [optionChain, currentTimestamp]);
 
-    // Strategy Advisor Logic
-    const advisorSignal = useMemo(() => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    void useMemo(() => {
         const spot = liveSpot || stepperSpot;
         if (!spot || topCallOiStrikes.length === 0 || topPutOiStrikes.length === 0) return null;
 

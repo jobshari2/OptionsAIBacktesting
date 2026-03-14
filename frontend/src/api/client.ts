@@ -47,6 +47,14 @@ export const dataApi = {
         if (useUnified !== undefined) params.set('use_unified', String(useUnified));
         return fetchJSON(`/api/data/oi-spikes?${params}`);
     },
+    getBacktestOptions: (expiry: string, queries: any[], useUnified?: boolean) => {
+        const body: any = { expiry, queries };
+        if (useUnified !== undefined) body.use_unified = useUnified;
+        return fetchJSON(`/api/data/backtest-options`, {
+            method: 'POST',
+            body: JSON.stringify(body)
+        });
+    },
 };
 
 // --- Strategy APIs ---

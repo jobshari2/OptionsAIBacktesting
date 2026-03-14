@@ -3,7 +3,7 @@ import { createChart, ColorType, CrosshairMode, CandlestickSeries } from 'lightw
 import { dataApi, aiApi } from '../api/client';
 import { useDataStore } from '../stores/appStore';
 import ReactMarkdown from 'react-markdown';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from 'recharts';
+import { BarChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ComposedChart } from 'recharts';
 
 export default function OptionChainExplorer() {
     const { expiries, setExpiries, selectedExpiry, setSelectedExpiry, optionChain, setOptionChain, globalUseUnified } = useDataStore();
@@ -32,6 +32,20 @@ export default function OptionChainExplorer() {
     const [selectedAiModel, setSelectedAiModel] = useState('gemini-1.5-flash');
     const [aiAnalysisTimestamp, setAiAnalysisTimestamp] = useState<string | null>(null);
     const [isAdvisorCollapsed, setIsAdvisorCollapsed] = useState(false);
+
+    // Mean Reversion Z-Score State
+    const [isMeanRevCollapsed, setIsMeanRevCollapsed] = useState(false);
+    const [mrWindow, setMrWindow] = useState(20);
+    const [mrEntryZ, setMrEntryZ] = useState(2.0);
+    const [mrExitZ, setMrExitZ] = useState(0.0);
+    const [mrStopZ, setMrStopZ] = useState(4.0);
+    const [mrTradingHoursOnly, setMrTradingHoursOnly] = useState(true);
+
+    // New Option Backtesting States
+    const [allOptionTrades, setAllOptionTrades] = useState<any[]>([]);
+    const [isOptionsLoading, setIsOptionsLoading] = useState(false);
+    const [mrReport, setMrReport] = useState<any | null>(null);
+    const [isReportLoading, setIsReportLoading] = useState(false);
 
     // New States for Time Stepper
     const [timestamps, setTimestamps] = useState<string[]>([]);
@@ -332,8 +346,8 @@ export default function OptionChainExplorer() {
         };
     }, [optionChain, currentTimestamp]);
 
-    // Strategy Advisor Logic
-    const advisorSignal = useMemo(() => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    void useMemo(() => {
         if (!currentSpot || topCallOiStrikes.length === 0 || topPutOiStrikes.length === 0) return null;
 
         const R1 = topCallOiStrikes[0];
@@ -783,6 +797,358 @@ export default function OptionChainExplorer() {
         });
     }, [strikes, filteredChain]);
 
+    // ========== MEAN REVERSION Z-SCORE ENGINE ==========
+
+    // Compute Z-Score series from indexData
+    const zScoreSeries = useMemo(() => {
+        if (indexData.length < mrWindow + 1) return [];
+
+        const sorted = [...indexData].sort((a, b) => parseTimestamp(a.Date) - parseTimestamp(b.Date));
+        const closes = sorted.map(d => d.Close);
+        const result: { time: number; timeStr: string; close: number; ma: number; std: number; z: number }[] = [];
+
+        for (let i = mrWindow; i < closes.length; i++) {
+            const window = closes.slice(i - mrWindow, i);
+            const ma = window.reduce((a, b) => a + b, 0) / mrWindow;
+            const variance = window.reduce((a, b) => a + (b - ma) ** 2, 0) / mrWindow;
+            const std = Math.sqrt(variance);
+            const z = std > 0 ? (closes[i] - ma) / std : 0;
+
+            result.push({
+                time: parseTimestamp(sorted[i].Date),
+                timeStr: sorted[i].Date,
+                close: closes[i],
+                ma,
+                std,
+                z: parseFloat(z.toFixed(3))
+            });
+        }
+        return result;
+    }, [indexData, mrWindow]);
+
+    // Current Z-Score at timestepper position
+    const currentZInfo = useMemo(() => {
+        if (zScoreSeries.length === 0 || !currentTimestamp) return null;
+        const targetUnix = parseTimestamp(currentTimestamp);
+        // Find closest Z entry at or before current timestamp
+        let best = zScoreSeries[0];
+        for (const entry of zScoreSeries) {
+            if (entry.time <= targetUnix) best = entry;
+            else break;
+        }
+        return best;
+    }, [zScoreSeries, currentTimestamp]);
+
+    // 1. Generate Raw Trades across the entire expiry
+    const allRawTrades = useMemo(() => {
+        if (zScoreSeries.length === 0) return [];
+
+        interface MRRawTrade {
+            type: 'LONG' | 'SHORT';
+            entryTime: string;
+            entryPrice: number;
+            entryZ: number;
+            exitTime: string;
+            exitPrice: number;
+            exitZ: number;
+            exitReason: string;
+            durationBars: number;
+            strike: number;
+            optionType: 'CE' | 'PE';
+        }
+
+        const trades: MRRawTrade[] = [];
+        let position: 'LONG' | 'SHORT' | null = null;
+        let entryPrice = 0;
+        let entryZ = 0;
+        let entryTime = '';
+        let entryIdx = 0;
+        let optionType: 'CE' | 'PE' = 'CE';
+        let strike = 0;
+
+        for (let i = 0; i < zScoreSeries.length; i++) {
+            const bar = zScoreSeries[i];
+            const z = bar.z;
+
+            // Skip non-trading hours if filter enabled
+            if (mrTradingHoursOnly && bar.timeStr) {
+                const timePart = bar.timeStr.split(' ')[1];
+                if (timePart) {
+                    const [hh, mm] = timePart.split(':').map(Number);
+                    const mins = hh * 60 + mm;
+                    if (mins < 9 * 60 + 20 || mins > 15 * 60 + 15) continue;
+                }
+            }
+
+            if (position === null) {
+                // Entry conditions
+                if (z < -mrEntryZ) {
+                    position = 'LONG';
+                    entryPrice = bar.close;
+                    entryZ = z;
+                    entryTime = bar.timeStr;
+                    entryIdx = i;
+                    optionType = 'CE'; // Buy Call for Mean Reversion Long
+                    strike = Math.round(bar.close / 50) * 50; // ATM Strike
+                } else if (z > mrEntryZ) {
+                    position = 'SHORT';
+                    entryPrice = bar.close;
+                    entryZ = z;
+                    entryTime = bar.timeStr;
+                    entryIdx = i;
+                    optionType = 'PE'; // Buy Put for Mean Reversion Short
+                    strike = Math.round(bar.close / 50) * 50; // ATM Strike
+                }
+            } else if (position === 'LONG') {
+                let exitReason = '';
+                if (z >= mrExitZ) exitReason = 'Mean Reversion';
+                else if (z < -mrStopZ) exitReason = 'Stop Loss';
+
+                if (exitReason) {
+                    trades.push({
+                        type: 'LONG',
+                        entryTime, entryPrice, entryZ,
+                        exitTime: bar.timeStr,
+                        exitPrice: bar.close,
+                        exitZ: z,
+                        exitReason,
+                        durationBars: i - entryIdx,
+                        strike, optionType
+                    });
+                    position = null;
+                }
+            } else if (position === 'SHORT') {
+                let exitReason = '';
+                if (z <= -mrExitZ) exitReason = 'Mean Reversion';
+                else if (z > mrStopZ) exitReason = 'Stop Loss';
+
+                if (exitReason) {
+                    trades.push({
+                        type: 'SHORT',
+                        entryTime, entryPrice, entryZ,
+                        exitTime: bar.timeStr,
+                        exitPrice: bar.close,
+                        exitZ: z,
+                        exitReason,
+                        durationBars: i - entryIdx,
+                        strike, optionType
+                    });
+                    position = null;
+                }
+            }
+        }
+        return trades;
+    }, [zScoreSeries, mrEntryZ, mrExitZ, mrStopZ, mrTradingHoursOnly]);
+
+    // 2. Fetch Option Prices for Raw Trades
+    useEffect(() => {
+        let mounted = true;
+        const fetchOptionPnL = async () => {
+            if (!allRawTrades || allRawTrades.length === 0) {
+                if (mounted) setAllOptionTrades([]);
+                return;
+            }
+            if (mounted) setIsOptionsLoading(true);
+
+            const queries: any[] = [];
+            allRawTrades.forEach((t, i) => {
+                queries.push({ id: `entry_${i}`, timestamp: t.entryTime, strike: t.strike, right: t.optionType });
+                queries.push({ id: `exit_${i}`, timestamp: t.exitTime, strike: t.strike, right: t.optionType });
+            });
+
+            try {
+                const res = await dataApi.getBacktestOptions(selectedExpiry, queries, globalUseUnified);
+                if (!mounted) return;
+                const priceMap = res.results || {};
+
+                const mappedTrades = allRawTrades.map((t, i) => {
+                    const optEntry = priceMap[`entry_${i}`];
+                    const optExit = priceMap[`exit_${i}`];
+                    let optPnl = 0;
+                    if (optEntry !== undefined && optExit !== undefined) {
+                        optPnl = optExit - optEntry; // We buy the option
+                    }
+                    return {
+                        ...t,
+                        optEntryPrice: optEntry,
+                        optExitPrice: optExit,
+                        optPnl
+                    };
+                });
+                setAllOptionTrades(mappedTrades);
+            } catch (e) { console.error("Failed to fetch option PnL:", e); }
+            if (mounted) setIsOptionsLoading(false);
+        };
+        fetchOptionPnL();
+        return () => { mounted = false; };
+    }, [allRawTrades, selectedExpiry, globalUseUnified]);
+
+    // 3. Filter Trades by Timestepper and Compute Metrics
+    const mrBacktest = useMemo(() => {
+        if (allOptionTrades.length === 0) return { trades: [], metrics: null };
+
+        const currentUnix = currentTimestamp ? parseTimestamp(currentTimestamp) : Infinity;
+        // Keep trades that exited before or exactly at current timestamp
+        const visibleTrades = allOptionTrades.filter(t => parseTimestamp(t.exitTime) <= currentUnix);
+
+        if (visibleTrades.length === 0) return { trades: [], metrics: null };
+
+        const validTrades = visibleTrades.filter(t => t.optEntryPrice !== undefined && t.optExitPrice !== undefined);
+        const wins = validTrades.filter(t => t.optPnl > 0);
+        const losses = validTrades.filter(t => t.optPnl <= 0);
+        const totalPnl = validTrades.reduce((a, t) => a + t.optPnl, 0);
+        const avgPnl = validTrades.length > 0 ? totalPnl / validTrades.length : 0;
+        const avgDuration = validTrades.length > 0 ? validTrades.reduce((a, t) => a + t.durationBars, 0) / validTrades.length : 0;
+        const grossProfit = wins.reduce((a, t) => a + t.optPnl, 0);
+        const grossLoss = Math.abs(losses.reduce((a, t) => a + t.optPnl, 0));
+        const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : (grossProfit > 0 ? Infinity : 0);
+
+        let peak = 0, maxDD = 0, cumPnl = 0;
+        for (const t of validTrades) {
+            cumPnl += t.optPnl;
+            if (cumPnl > peak) peak = cumPnl;
+            const dd = peak - cumPnl;
+            if (dd > maxDD) maxDD = dd;
+        }
+
+        const pnls = validTrades.map(t => t.optPnl);
+        const meanPnl = pnls.length > 0 ? pnls.reduce((a, b) => a + b, 0) / pnls.length : 0;
+        const stdPnl = pnls.length > 0 ? Math.sqrt(pnls.reduce((a, b) => a + (b - meanPnl) ** 2, 0) / pnls.length) : 0;
+        const sharpe = stdPnl > 0 ? (meanPnl / stdPnl) * Math.sqrt(252) : 0;
+
+        return {
+            trades: validTrades,
+            metrics: {
+                totalTrades: validTrades.length,
+                winRate: validTrades.length > 0 ? ((wins.length / validTrades.length) * 100).toFixed(1) : "0.0",
+                totalPnl: totalPnl.toFixed(2),
+                avgPnl: avgPnl.toFixed(2),
+                profitFactor: profitFactor === Infinity ? '∞' : profitFactor.toFixed(2),
+                maxDrawdown: maxDD.toFixed(2),
+                sharpe: sharpe.toFixed(2),
+                avgDuration: avgDuration.toFixed(0),
+                wins: wins.length,
+                losses: losses.length,
+                grossProfit: grossProfit.toFixed(2),
+                grossLoss: grossLoss.toFixed(2),
+            }
+        };
+    }, [allOptionTrades, currentTimestamp]);
+
+    // Trades Report Logic
+    const generateTradesReport = async () => {
+        if (zScoreSeries.length === 0 || !selectedExpiry) return;
+        setIsReportLoading(true);
+
+        const testZValues = [1.0, 1.5, 2.0, 2.5, 3.0];
+        const allQueries: any[] = [];
+        const rawTradesByZ: Record<number, any[]> = {};
+
+        for (const testZ of testZValues) {
+            let position: 'LONG' | 'SHORT' | null = null;
+            let entryZ = 0; let entryTime = ''; let entryIdx = 0;
+            let optionType: 'CE' | 'PE' = 'CE'; let strike = 0;
+            const trades: any[] = [];
+
+            for (let i = 0; i < zScoreSeries.length; i++) {
+                const bar = zScoreSeries[i];
+                const z = bar.z;
+                if (mrTradingHoursOnly && bar.timeStr) {
+                    const timePart = bar.timeStr.split(' ')[1];
+                    if (timePart) {
+                        const [hh, mm] = timePart.split(':').map(Number);
+                        const mins = hh * 60 + mm;
+                        if (mins < 9 * 60 + 20 || mins > 15 * 60 + 15) continue;
+                    }
+                }
+                if (position === null) {
+                    if (z < -testZ) {
+                        position = 'LONG'; entryZ = z; entryTime = bar.timeStr; entryIdx = i;
+                        optionType = 'CE'; strike = Math.round(bar.close / 50) * 50;
+                    } else if (z > testZ) {
+                        position = 'SHORT'; entryZ = z; entryTime = bar.timeStr; entryIdx = i;
+                        optionType = 'PE'; strike = Math.round(bar.close / 50) * 50;
+                    }
+                } else if (position === 'LONG') {
+                    if (z >= mrExitZ || z < -mrStopZ) {
+                        trades.push({ entryTime, entryZ, exitTime: bar.timeStr, exitZ: z, strike, optionType });
+                        position = null;
+                    }
+                } else if (position === 'SHORT') {
+                    if (z <= -mrExitZ || z > mrStopZ) {
+                        trades.push({ entryTime, entryZ, exitTime: bar.timeStr, exitZ: z, strike, optionType });
+                        position = null;
+                    }
+                }
+            }
+            rawTradesByZ[testZ] = trades;
+            
+            trades.forEach((t, i) => {
+                allQueries.push({ id: `Z${testZ}_entry_${i}`, timestamp: t.entryTime, strike: t.strike, right: t.optionType });
+                allQueries.push({ id: `Z${testZ}_exit_${i}`, timestamp: t.exitTime, strike: t.strike, right: t.optionType });
+            });
+        }
+
+        try {
+            const res = await dataApi.getBacktestOptions(selectedExpiry, allQueries, globalUseUnified);
+            const priceMap = res.results || {};
+            
+            const reportResults = testZValues.map(testZ => {
+                const tr = rawTradesByZ[testZ];
+                const validTrades = tr.map((t, i) => {
+                    const optEntry = priceMap[`Z${testZ}_entry_${i}`];
+                    const optExit = priceMap[`Z${testZ}_exit_${i}`];
+                    let optPnl = 0;
+                    if (optEntry !== undefined && optExit !== undefined) {
+                        optPnl = optExit - optEntry;
+                    }
+                    return { ...t, optEntry, optExit, optPnl };
+                }).filter(t => t.optEntry !== undefined && t.optExit !== undefined);
+
+                const wins = validTrades.filter(t => t.optPnl > 0);
+                const totalPnl = validTrades.reduce((a, t) => a + t.optPnl, 0);
+                const winRate = validTrades.length > 0 ? (wins.length / validTrades.length) * 100 : 0;
+                
+                let peak = 0, maxDD = 0, cumPnl = 0;
+                for (const t of validTrades) {
+                    cumPnl += t.optPnl;
+                    if (cumPnl > peak) peak = cumPnl;
+                    if (peak - cumPnl > maxDD) maxDD = peak - cumPnl;
+                }
+
+                return {
+                    entryZ: testZ,
+                    totalTrades: validTrades.length,
+                    winRate: winRate.toFixed(1),
+                    totalPnl: totalPnl.toFixed(2),
+                    maxDrawdown: maxDD.toFixed(2)
+                };
+            });
+
+            setMrReport(reportResults);
+        } catch (e) {
+            console.error("Failed to generate Trades Report:", e);
+        }
+        setIsReportLoading(false);
+    };
+
+    // Prepare Z-Score chart data (sampled to avoid rendering thousands of points)
+    const zScoreChartData = useMemo(() => {
+        if (zScoreSeries.length === 0) return [];
+        const currentUnix = currentTimestamp ? parseTimestamp(currentTimestamp) : Infinity;
+        const visible = zScoreSeries.filter(s => s.time <= currentUnix);
+        // Sample every Nth point if too many
+        const maxPoints = 300;
+        const step = Math.max(1, Math.floor(visible.length / maxPoints));
+        return visible.filter((_, i) => i % step === 0 || i === visible.length - 1).map(s => ({
+            time: s.timeStr.split(' ')[1] || s.timeStr,
+            z: s.z,
+            close: s.close,
+            upper: mrEntryZ,
+            lower: -mrEntryZ,
+        }));
+    }, [zScoreSeries, currentTimestamp, mrEntryZ]);
+
     return (
         <div className="fade-in">
             {/* Top Control Bar */}
@@ -1151,6 +1517,439 @@ export default function OptionChainExplorer() {
                                 </tfoot>
                             </table>
                         </div>
+                    </div>
+                )}
+
+                {/* ========== MEAN REVERSION Z-SCORE SECTION ========== */}
+                {selectedExpiry && indexData.length > 0 && (
+                    <div className="card fade-in" style={{
+                        marginBottom: 16,
+                        border: '1px solid rgba(168, 85, 247, 0.3)',
+                        boxShadow: '0 0 20px rgba(168, 85, 247, 0.08)'
+                    }}>
+                        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div className="card-title" onClick={() => setIsMeanRevCollapsed(!isMeanRevCollapsed)} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span>{isMeanRevCollapsed ? '▶' : '▼'}</span>
+                                <span style={{
+                                    background: 'linear-gradient(90deg, #A855F7, #EC4899)',
+                                    WebkitBackgroundClip: 'text',
+                                    WebkitTextFillColor: 'transparent',
+                                    fontWeight: 800
+                                }}>
+                                    📊 Mean Reversion Z-Score Strategy
+                                </span>
+                                {currentZInfo && (
+                                    <span style={{
+                                        marginLeft: 12,
+                                        padding: '3px 10px',
+                                        borderRadius: 20,
+                                        fontSize: 12,
+                                        fontWeight: 800,
+                                        background: Math.abs(currentZInfo.z) >= mrEntryZ
+                                            ? (currentZInfo.z < 0 ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)')
+                                            : 'rgba(255, 255, 255, 0.05)',
+                                        color: Math.abs(currentZInfo.z) >= mrEntryZ
+                                            ? (currentZInfo.z < 0 ? 'var(--green)' : 'var(--red)')
+                                            : 'var(--text-muted)',
+                                        border: `1px solid ${Math.abs(currentZInfo.z) >= mrEntryZ
+                                            ? (currentZInfo.z < 0 ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)')
+                                            : 'rgba(255,255,255,0.1)'}`
+                                    }}>
+                                        Z: {currentZInfo.z.toFixed(2)} {Math.abs(currentZInfo.z) >= mrEntryZ ? (currentZInfo.z < 0 ? '🟢 LONG' : '🔴 SHORT') : '⚪ NEUTRAL'}
+                                    </span>
+                                )}
+                                {mrBacktest.metrics && (
+                                    <span style={{
+                                        marginLeft: 8,
+                                        fontSize: 11,
+                                        color: parseFloat(mrBacktest.metrics.totalPnl) >= 0 ? 'var(--green)' : 'var(--red)',
+                                        fontWeight: 700
+                                    }}>
+                                        P&L: {parseFloat(mrBacktest.metrics.totalPnl) >= 0 ? '+' : ''}{mrBacktest.metrics.totalPnl} pts
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+
+                        {!isMeanRevCollapsed && (
+                            <div style={{ padding: '16px', borderTop: '1px solid var(--border-color)' }}>
+                                {/* Parameter Controls */}
+                                <div style={{
+                                    display: 'flex',
+                                    gap: 16,
+                                    flexWrap: 'wrap',
+                                    marginBottom: 20,
+                                    padding: '12px 16px',
+                                    background: 'rgba(255,255,255,0.02)',
+                                    borderRadius: 10,
+                                    border: '1px solid rgba(255,255,255,0.05)'
+                                }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                                        <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>Window:</span>
+                                        <select className="form-select" style={{ height: 28, padding: '0 6px', width: 70, fontSize: 11 }}
+                                            value={mrWindow} onChange={e => setMrWindow(parseInt(e.target.value))}>
+                                            {[5, 10, 15, 20, 30, 50, 60].map(v => <option key={v} value={v}>{v} min</option>)}
+                                        </select>
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                                        <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>Entry Z:</span>
+                                        <select className="form-select" style={{ height: 28, padding: '0 6px', width: 60, fontSize: 11 }}
+                                            value={mrEntryZ} onChange={e => setMrEntryZ(parseFloat(e.target.value))}>
+                                            {[1.0, 1.5, 2.0, 2.5, 3.0].map(v => <option key={v} value={v}>±{v}</option>)}
+                                        </select>
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                                        <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>Exit Z:</span>
+                                        <select className="form-select" style={{ height: 28, padding: '0 6px', width: 60, fontSize: 11 }}
+                                            value={mrExitZ} onChange={e => setMrExitZ(parseFloat(e.target.value))}>
+                                            {[0, 0.25, 0.5, 1.0].map(v => <option key={v} value={v}>{v}</option>)}
+                                        </select>
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                                        <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>Stop Z:</span>
+                                        <select className="form-select" style={{ height: 28, padding: '0 6px', width: 60, fontSize: 11 }}
+                                            value={mrStopZ} onChange={e => setMrStopZ(parseFloat(e.target.value))}>
+                                            {[3.0, 3.5, 4.0, 5.0].map(v => <option key={v} value={v}>±{v}</option>)}
+                                        </select>
+                                    </div>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+                                        <input type="checkbox" checked={mrTradingHoursOnly}
+                                            onChange={e => setMrTradingHoursOnly(e.target.checked)} />
+                                        <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>Trading Hours Only (9:20–15:15)</span>
+                                    </label>
+                                </div>
+
+                                {/* Z-Score Gauge Row */}
+                                {currentZInfo && (
+                                    <div style={{
+                                        display: 'grid',
+                                        gridTemplateColumns: '1fr 1fr 1fr',
+                                        gap: 12,
+                                        marginBottom: 20
+                                    }}>
+                                        {/* Z-Score Gauge */}
+                                        <div style={{
+                                            background: 'var(--bg-card)',
+                                            borderRadius: 12,
+                                            padding: '16px 20px',
+                                            border: '1px solid rgba(255,255,255,0.06)',
+                                            textAlign: 'center'
+                                        }}>
+                                            <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700, letterSpacing: 1, marginBottom: 8 }}>Current Z-Score</div>
+                                            <div style={{
+                                                fontSize: 36,
+                                                fontWeight: 900,
+                                                fontFamily: 'monospace',
+                                                color: Math.abs(currentZInfo.z) >= mrStopZ ? '#ff4444'
+                                                    : Math.abs(currentZInfo.z) >= mrEntryZ ? (currentZInfo.z < 0 ? '#10b981' : '#ef4444')
+                                                    : Math.abs(currentZInfo.z) >= 1 ? '#eab308'
+                                                    : '#6b7280',
+                                                textShadow: Math.abs(currentZInfo.z) >= mrEntryZ ? `0 0 20px ${currentZInfo.z < 0 ? 'rgba(16,185,129,0.4)' : 'rgba(239,68,68,0.4)'}` : 'none'
+                                            }}>
+                                                {currentZInfo.z >= 0 ? '+' : ''}{currentZInfo.z.toFixed(2)}
+                                            </div>
+                                            <div style={{
+                                                marginTop: 8,
+                                                fontSize: 11,
+                                                fontWeight: 700,
+                                                padding: '4px 12px',
+                                                borderRadius: 20,
+                                                display: 'inline-block',
+                                                background: Math.abs(currentZInfo.z) >= mrEntryZ
+                                                    ? (currentZInfo.z < 0 ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)')
+                                                    : 'rgba(255,255,255,0.05)',
+                                                color: Math.abs(currentZInfo.z) >= mrEntryZ
+                                                    ? (currentZInfo.z < 0 ? '#10b981' : '#ef4444')
+                                                    : '#9ca3af'
+                                            }}>
+                                                {Math.abs(currentZInfo.z) >= mrStopZ ? '⚠ EXTREME' :
+                                                 Math.abs(currentZInfo.z) >= mrEntryZ ? (currentZInfo.z < 0 ? '▲ BUY SIGNAL' : '▼ SELL SIGNAL') :
+                                                 Math.abs(currentZInfo.z) >= 1 ? 'Mild Deviation' : 'Near Mean'}
+                                            </div>
+                                        </div>
+
+                                        {/* Price Info */}
+                                        <div style={{
+                                            background: 'var(--bg-card)',
+                                            borderRadius: 12,
+                                            padding: '16px 20px',
+                                            border: '1px solid rgba(255,255,255,0.06)'
+                                        }}>
+                                            <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700, letterSpacing: 1, marginBottom: 12 }}>Price Stats</div>
+                                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                                                <div>
+                                                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Price</div>
+                                                    <div style={{ fontSize: 16, fontWeight: 700 }}>{currentZInfo.close.toFixed(2)}</div>
+                                                </div>
+                                                <div>
+                                                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>MA({mrWindow})</div>
+                                                    <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--blue)' }}>{currentZInfo.ma.toFixed(2)}</div>
+                                                </div>
+                                                <div>
+                                                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>StdDev</div>
+                                                    <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--purple)' }}>{currentZInfo.std.toFixed(2)}</div>
+                                                </div>
+                                                <div>
+                                                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Deviation</div>
+                                                    <div style={{ fontSize: 16, fontWeight: 700, color: (currentZInfo.close - currentZInfo.ma) >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                                                        {(currentZInfo.close - currentZInfo.ma) >= 0 ? '+' : ''}{(currentZInfo.close - currentZInfo.ma).toFixed(2)}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* Options Signal */}
+                                        <div style={{
+                                            background: 'var(--bg-card)',
+                                            borderRadius: 12,
+                                            padding: '16px 20px',
+                                            border: '1px solid rgba(255,255,255,0.06)'
+                                        }}>
+                                            <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700, letterSpacing: 1, marginBottom: 12 }}>Options Signal</div>
+                                            {Math.abs(currentZInfo.z) >= mrEntryZ ? (
+                                                <div>
+                                                    <div style={{
+                                                        fontSize: 14, fontWeight: 800, marginBottom: 8,
+                                                        color: currentZInfo.z < 0 ? 'var(--green)' : 'var(--red)'
+                                                    }}>
+                                                        {currentZInfo.z < 0 ? '🟢 Buy ATM CALL' : '🔴 Buy ATM PUT'}
+                                                    </div>
+                                                    <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                                                        {currentZInfo.z < 0
+                                                            ? `Price is ${Math.abs(currentZInfo.z).toFixed(1)}σ below mean. Oversold — expect bounce to MA (${currentZInfo.ma.toFixed(0)}).`
+                                                            : `Price is ${currentZInfo.z.toFixed(1)}σ above mean. Overbought — expect pullback to MA (${currentZInfo.ma.toFixed(0)}).`}
+                                                    </div>
+                                                    <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+                                                        Target: MA at {currentZInfo.ma.toFixed(0)} ({currentZInfo.z < 0 ? '+' : ''}{(currentZInfo.ma - currentZInfo.close).toFixed(1)} pts)
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <div>
+                                                    <div style={{ fontSize: 14, fontWeight: 800, color: '#6b7280', marginBottom: 8 }}>
+                                                        ⚪ No Active Signal
+                                                    </div>
+                                                    <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                                                        Price is within ±{mrEntryZ}σ of the mean. Waiting for Z-Score to breach the entry threshold.
+                                                    </div>
+                                                    {Math.abs(currentZInfo.z) >= 1 && (
+                                                        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--yellow)' }}>
+                                                            ⚠ Approaching threshold ({currentZInfo.z.toFixed(2)} / ±{mrEntryZ})
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Z-Score Chart */}
+                                {zScoreChartData.length > 0 && (
+                                    <div style={{ marginBottom: 20 }}>
+                                        <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 700, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>
+                                            Z-Score Timeline
+                                        </div>
+                                        <ResponsiveContainer width="100%" height={200}>
+                                            <ComposedChart data={zScoreChartData} margin={{ top: 5, right: 5, left: -20, bottom: 5 }}>
+                                                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                                                <XAxis dataKey="time" tick={{ fontSize: 9, fill: '#6b7280' }} interval="preserveStartEnd" />
+                                                <YAxis tick={{ fontSize: 9, fill: '#6b7280' }} domain={['auto', 'auto']} />
+                                                <Tooltip
+                                                    contentStyle={{ background: 'rgba(15,23,42,0.95)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 11 }}
+                                                    labelStyle={{ color: '#9ca3af' }}
+                                                />
+                                                <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" strokeWidth={1} />
+                                                <ReferenceLine y={mrEntryZ} stroke="rgba(239,68,68,0.4)" strokeDasharray="5 5" label={{ value: `+${mrEntryZ}`, position: 'right', fill: '#ef4444', fontSize: 9 }} />
+                                                <ReferenceLine y={-mrEntryZ} stroke="rgba(16,185,129,0.4)" strokeDasharray="5 5" label={{ value: `-${mrEntryZ}`, position: 'right', fill: '#10b981', fontSize: 9 }} />
+                                                <Line type="monotone" dataKey="z" stroke="#a855f7" strokeWidth={1.5} dot={false} name="Z-Score" />
+                                            </ComposedChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                )}
+
+                                {/* Backtest Metrics */}
+                                {mrBacktest.metrics && (
+                                    <div style={{ marginBottom: 20 }}>
+                                        <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 700, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>
+                                            Backtest Performance ({mrBacktest.metrics.totalTrades} trades up to current time)
+                                        </div>
+                                        <div style={{
+                                            display: 'grid',
+                                            gridTemplateColumns: 'repeat(6, 1fr)',
+                                            gap: 8
+                                        }}>
+                                            {[
+                                                { label: 'Win Rate', value: `${mrBacktest.metrics.winRate}%`, color: parseFloat(mrBacktest.metrics.winRate) >= 50 ? 'var(--green)' : 'var(--red)' },
+                                                { label: 'Total P&L', value: `${parseFloat(mrBacktest.metrics.totalPnl) >= 0 ? '+' : ''}${mrBacktest.metrics.totalPnl}`, color: parseFloat(mrBacktest.metrics.totalPnl) >= 0 ? 'var(--green)' : 'var(--red)' },
+                                                { label: 'Sharpe', value: mrBacktest.metrics.sharpe, color: parseFloat(mrBacktest.metrics.sharpe) >= 1.5 ? 'var(--green)' : 'var(--yellow)' },
+                                                { label: 'Profit Factor', value: mrBacktest.metrics.profitFactor, color: parseFloat(mrBacktest.metrics.profitFactor) >= 1.5 ? 'var(--green)' : 'var(--orange)' },
+                                                { label: 'Max DD', value: `-${mrBacktest.metrics.maxDrawdown}`, color: 'var(--red)' },
+                                                { label: 'Avg Duration', value: `${mrBacktest.metrics.avgDuration} bars`, color: 'var(--text-muted)' },
+                                            ].map((m, i) => (
+                                                <div key={i} style={{
+                                                    background: 'rgba(255,255,255,0.02)',
+                                                    borderRadius: 8,
+                                                    padding: '10px 12px',
+                                                    border: '1px solid rgba(255,255,255,0.05)',
+                                                    textAlign: 'center'
+                                                }}>
+                                                    <div style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 4 }}>{m.label}</div>
+                                                    <div style={{ fontSize: 16, fontWeight: 800, color: m.color }}>{m.value}</div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        <div style={{ marginTop: 8, display: 'flex', gap: 16, fontSize: 11, color: 'var(--text-muted)' }}>
+                                            <span>Wins: <strong style={{ color: 'var(--green)' }}>{mrBacktest.metrics.wins}</strong> ({mrBacktest.metrics.grossProfit} pts)</span>
+                                            <span>Losses: <strong style={{ color: 'var(--red)' }}>{mrBacktest.metrics.losses}</strong> (-{mrBacktest.metrics.grossLoss} pts)</span>
+                                            <span>Avg P&L/Trade: <strong style={{ color: parseFloat(mrBacktest.metrics.avgPnl) >= 0 ? 'var(--green)' : 'var(--red)' }}>{mrBacktest.metrics.avgPnl}</strong></span>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Trades (Opportunities) Table */}
+                                {mrBacktest.trades.length > 0 && (
+                                    <div>
+                                        <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 700, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>
+                                            Trade Opportunities ({mrBacktest.trades.length})
+                                        </div>
+                                        <div className="table-container" style={{ maxHeight: 300, overflowY: 'auto' }}>
+                                            <table className="option-chain-table">
+                                                <thead>
+                                                    <tr>
+                                                        <th>#</th>
+                                                        <th>Type/Strike</th>
+                                                        <th>Entry Time</th>
+                                                        <th style={{ textAlign: 'right' }}>Idx / Opt Entry</th>
+                                                        <th>Exit Time</th>
+                                                        <th style={{ textAlign: 'right' }}>Idx / Opt Exit</th>
+                                                        <th>Reason</th>
+                                                        <th style={{ textAlign: 'right' }}>Opt P&L</th>
+                                                        <th style={{ textAlign: 'right' }}>Duration</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {mrBacktest.trades.map((t: any, idx: number) => (
+                                                        <tr key={idx} onClick={() => {
+                                                            const timeIdx = timestamps.indexOf(t.entryTime);
+                                                            if (timeIdx !== -1) {
+                                                                setCurrentIndex(timeIdx);
+                                                                loadChainAtTime(timestamps[timeIdx]);
+                                                            }
+                                                        }} style={{ cursor: 'pointer' }}>
+                                                            <td style={{ color: 'var(--text-muted)', fontSize: 10 }}>{idx + 1}</td>
+                                                            <td>
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                                    <span style={{
+                                                                        fontWeight: 800, fontSize: 9, padding: '2px 6px', borderRadius: 4,
+                                                                        background: t.optionType === 'CE' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
+                                                                        color: t.optionType === 'CE' ? '#10b981' : '#ef4444'
+                                                                    }}>
+                                                                        {t.optionType}
+                                                                    </span>
+                                                                    <span style={{ fontSize: 11, fontWeight: 700 }}>{t.strike}</span>
+                                                                </div>
+                                                            </td>
+                                                            <td style={{ fontSize: 11 }}>
+                                                                <div>{t.entryTime}</div>
+                                                                <div style={{ fontSize: 9, color: 'var(--purple)' }}>Z: {t.entryZ.toFixed(2)}</div>
+                                                            </td>
+                                                            <td style={{ textAlign: 'right' }}>
+                                                                <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>Idx: {t.entryPrice.toFixed(2)}</div>
+                                                                <div style={{ fontWeight: 600 }}>{t.optEntryPrice !== undefined ? t.optEntryPrice.toFixed(2) : '-'}</div>
+                                                            </td>
+                                                            <td style={{ fontSize: 11 }}>
+                                                                <div>{t.exitTime}</div>
+                                                                <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>Z: {t.exitZ.toFixed(2)}</div>
+                                                            </td>
+                                                            <td style={{ textAlign: 'right' }}>
+                                                                <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>Idx: {t.exitPrice.toFixed(2)}</div>
+                                                                <div style={{ fontWeight: 600 }}>{t.optExitPrice !== undefined ? t.optExitPrice.toFixed(2) : '-'}</div>
+                                                            </td>
+                                                            <td>
+                                                                <span className="badge" style={{
+                                                                    fontSize: 9,
+                                                                    background: t.exitReason === 'Stop Loss' ? 'rgba(239,68,68,0.1)' : 'rgba(16,185,129,0.1)',
+                                                                    color: t.exitReason === 'Stop Loss' ? 'var(--red)' : 'var(--green)'
+                                                                }}>
+                                                                    {t.exitReason}
+                                                                </span>
+                                                            </td>
+                                                            <td style={{
+                                                                textAlign: 'right', fontWeight: 800,
+                                                                color: t.optPnl > 0 ? 'var(--green)' : (t.optPnl < 0 ? 'var(--red)' : 'var(--text-muted)')
+                                                            }}>
+                                                                {t.optPnl > 0 ? '+' : ''}{t.optPnl.toFixed(2)}
+                                                            </td>
+                                                            <td style={{ textAlign: 'right', fontSize: 10, color: 'var(--text-muted)' }}>{t.durationBars} bars</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Empty State */}
+                                {zScoreSeries.length === 0 && (
+                                    <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>
+                                        Not enough index data. Need at least {mrWindow + 1} bars to compute Z-Score.
+                                    </div>
+                                )}
+                                {zScoreSeries.length > 0 && mrBacktest.trades.length === 0 && (
+                                    <div style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
+                                        No trades triggered with current parameters up to this timestamp. Try lowering Entry Z or adjusting Window.
+                                    </div>
+                                )}
+                                
+                                {/* Trades Report Section */}
+                                {zScoreSeries.length > 0 && (
+                                    <div style={{ marginTop: 24, padding: '16px', background: 'rgba(255,255,255,0.02)', borderRadius: 8, border: '1px solid rgba(255,255,255,0.05)' }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                                            <div>
+                                                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>Trades Report Analysis</div>
+                                                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Analyze strategy performance across multiple Entry Z thresholds</div>
+                                            </div>
+                                            <button 
+                                                className="btn" 
+                                                onClick={generateTradesReport}
+                                                disabled={isReportLoading}
+                                                style={{ padding: '6px 12px', fontSize: 11, background: 'linear-gradient(90deg, #A855F7, #3B82F6)', color: 'white', border: 'none', borderRadius: 4, display: 'flex', alignItems: 'center', gap: 6 }}
+                                            >
+                                                {isReportLoading ? <div className="spinner-small" /> : 'Generate Trades Report'}
+                                            </button>
+                                        </div>
+
+                                        {mrReport && (
+                                            <div className="table-container fade-in">
+                                                <table className="option-chain-table">
+                                                    <thead>
+                                                        <tr>
+                                                            <th style={{ textAlign: 'center' }}>Entry Z</th>
+                                                            <th style={{ textAlign: 'center' }}>Total Trades</th>
+                                                            <th style={{ textAlign: 'right' }}>Win Rate (%)</th>
+                                                            <th style={{ textAlign: 'right' }}>Total Option P&L</th>
+                                                            <th style={{ textAlign: 'right' }}>Max Drawdown</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {mrReport.map((r: any, idx: number) => (
+                                                            <tr key={idx}>
+                                                                <td style={{ textAlign: 'center', fontWeight: 800, color: 'var(--purple)' }}>±{r.entryZ.toFixed(1)}</td>
+                                                                <td style={{ textAlign: 'center' }}>{r.totalTrades}</td>
+                                                                <td style={{ textAlign: 'right', fontWeight: 700, color: parseFloat(r.winRate) >= 50 ? 'var(--green)' : 'var(--red)' }}>{r.winRate}%</td>
+                                                                <td style={{ textAlign: 'right', fontWeight: 800, color: parseFloat(r.totalPnl) >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                                                                    {parseFloat(r.totalPnl) >= 0 ? '+' : ''}{r.totalPnl}
+                                                                </td>
+                                                                <td style={{ textAlign: 'right', color: 'var(--red)', fontWeight: 600 }}>-{r.maxDrawdown}</td>
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
                 )}
 

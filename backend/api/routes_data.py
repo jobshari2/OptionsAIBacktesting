@@ -14,6 +14,17 @@ from pydantic import BaseModel
 class ConfigUpdateRequest(BaseModel):
     use_unified: bool
 
+class OptionQueryItem(BaseModel):
+    id: str
+    timestamp: str 
+    strike: int
+    right: str  # 'CE' or 'PE'
+
+class BacktestOptionQuery(BaseModel):
+    expiry: str
+    queries: list[OptionQueryItem]
+    use_unified: Optional[bool] = None
+
 router = APIRouter(prefix="/api/data", tags=["Data"])
 
 # Shared instances
@@ -272,6 +283,80 @@ async def get_oi_spikes(
         }
     except Exception as e:
         logger.error(f"Error calculating OI spikes: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/backtest-options")
+async def get_backtest_options(req: BacktestOptionQuery):
+    """
+    High-performance endpoint to fetch exact option prices for a list of (timestamp, strike, type) queries.
+    Used for frontend backtest simulations.
+    """
+    import time
+    import polars as pl
+    start = time.time()
+    
+    logger.info(f"Fetching option backtest data for expiry={req.expiry}, {len(req.queries)} queries")
+    try:
+        df = data_loader.load_options(req.expiry, use_unified=req.use_unified)
+        if df.is_empty():
+            return {"expiry": req.expiry, "results": {}, "time_ms": int((time.time() - start)*1000)}
+
+        if df.schema.get("Date") == pl.Utf8:
+            df = df.with_columns(pl.col("Date").str.to_datetime().alias("Date"))
+            
+        # 1. Parse dates robustly to a consistent string representation
+        from datetime import datetime
+        import dateutil.parser
+        
+        parsed_queries = []
+        for q in req.queries:
+            # Try to parse frontend formats (DD/MM/YYYY or ISO)
+            dt = None
+            for fmt in ["%d/%m/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"]:
+                try:
+                    dt = datetime.strptime(q.timestamp, fmt)
+                    break
+                except ValueError:
+                    pass
+            if not dt:
+                try:
+                    dt = dateutil.parser.parse(q.timestamp)
+                except:
+                    dt = None
+            
+            ts_str = dt.strftime("%Y-%m-%d %H:%M:%S") if dt else q.timestamp
+            parsed_queries.append({
+                "id": q.id,
+                "DateStr": ts_str,
+                "Strike": q.strike,
+                "Right": q.right
+            })
+            
+        qdf = pl.DataFrame(parsed_queries)
+        
+        # 2. Add 'DateStr' to options df to ensure consistent string matching
+        df = df.with_columns(pl.col("Date").dt.strftime("%Y-%m-%d %H:%M:%S").alias("DateStr"))
+        
+        # 3. Left join on matched string values and strikes
+        res = qdf.join(df, on=["DateStr", "Strike", "Right"], how="left")
+        
+        records = res.select(["id", "Close"]).to_dicts()
+        results = {r["id"]: r["Close"] for r in records if r["Close"] is not None}
+        
+        logger.info(f"Query DF Head: {qdf.head(2).to_dicts()}")
+        logger.info(f"Options DF Head: {df.select(['Date', 'Strike', 'Right', 'Close']).head(2).to_dicts()}")
+        logger.info(f"Matched {len(results)} out of {len(req.queries)}")
+        
+        return {
+            "expiry": req.expiry,
+            "total_queried": len(req.queries),
+            "total_found": len(results),
+            "results": results,
+            "time_ms": int((time.time() - start)*1000)
+        }
+    except Exception as e:
+        logger.error(f"Error in backtest-options bulk fetch: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
