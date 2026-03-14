@@ -1,21 +1,28 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { createChart, ColorType, CrosshairMode, CandlestickSeries } from 'lightweight-charts';
 import { dataApi, aiApi, breezeApi, BreezeWS } from '../api/client';
-import { useDataStore } from '../stores/appStore';
 import ReactMarkdown from 'react-markdown';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from 'recharts';
 
+const IST_OFFSET_S = 19800; // +5:30 in seconds
+const globalUseUnified = true;
+
 export default function OptionChainLive() {
-    const { expiries, setExpiries, selectedExpiry, setSelectedExpiry, optionChain, setOptionChain } = useDataStore();
+    // Use component local state instead of global store so Live screen is independent
+    const [selectedExpiry, setSelectedExpiry] = useState('');
+    const [optionChain, setOptionChain] = useState<any[]>([]);
+    
+    // UI state
+    const [availableExpiries, setAvailableExpiries] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
     const [authStatus, setAuthStatus] = useState<{ authenticated: boolean; user_id?: string; updated_at?: string } | null>(null);
     const [apiSession, setApiSession] = useState('');
     const [wsConnected, setWsConnected] = useState(false);
     const [lastTick, setLastTick] = useState<any>(null);
-    const [wsError, setWsError] = useState<string | null>(null);
 
     // Live specific state
     const [liveTicks, setLiveTicks] = useState<Record<string, any>>({});
+    const [liveSpot, setLiveSpot] = useState<number | undefined>(undefined);
     const wsRef = useRef<BreezeWS | null>(null);
     const [stepping, setStepping] = useState(false);
     const [filter, setFilter] = useState('');
@@ -24,6 +31,7 @@ export default function OptionChainLive() {
     const [metrics, setMetrics] = useState<{ load_time_ms?: number; source_type?: string }>({});
     const [isTableCollapsed, setIsTableCollapsed] = useState(false);
     const [isChartCollapsed, setIsChartCollapsed] = useState(false);
+    const [isOiBuildupCollapsed, setIsOiBuildupCollapsed] = useState(false);
     const [isSpikesCollapsed, setIsSpikesCollapsed] = useState(false);
     const [oiSpikes, setOiSpikes] = useState<any[]>([]);
     const [spikeLoading, setSpikeLoading] = useState(false);
@@ -61,7 +69,7 @@ export default function OptionChainLive() {
     const [liveIndexData, setLiveIndexData] = useState<any[]>([]);
     const [futuresData, setFuturesLocalData] = useState<any[]>([]);
 
-    // Helper to parse timestamps to Unix Timestamp (seconds)
+    // Helper to parse timestamps to Unix Timestamp (seconds) in IST for chart display
     const parseTimestamp = (ts: string) => {
         if (!ts) return 0;
         // Try custom "DD/MM/YYYY HH:MM:SS"
@@ -72,16 +80,16 @@ export default function OptionChainLive() {
             return Date.UTC(
                 parseInt(dateParts[2]), parseInt(dateParts[1]) - 1, parseInt(dateParts[0]),
                 parseInt(timeParts[0]), parseInt(timeParts[1]), parseInt(timeParts[2])
-            ) / 1000;
+            ) / 1000 + IST_OFFSET_S;
         }
-        // Fallback to standard Date parsing
-        return Math.floor(new Date(ts).getTime() / 1000);
+        // Fallback to standard Date parsing + IST offset
+        return Math.floor(new Date(ts).getTime() / 1000) + IST_OFFSET_S;
     };
 
     useEffect(() => {
-        loadExpiries();
         loadAiModels();
         checkAuth();
+        loadBreezeExpiries();
     }, []);
 
     const checkAuth = async () => {
@@ -98,6 +106,21 @@ export default function OptionChainLive() {
         } catch (e: any) { alert(e.message); }
     };
 
+    const loadBreezeExpiries = async () => {
+        try {
+            const data = await breezeApi.getExpiries();
+            if (data.expiries && data.expiries.length > 0) {
+                setAvailableExpiries(data.expiries);
+                // Auto-select nearest expiry if none selected
+                if (!selectedExpiry) {
+                    setSelectedExpiry(data.expiries[0].expiry);
+                }
+            }
+        } catch (e) {
+            console.error('Failed to load expiries:', e);
+        }
+    };
+
     const handleConnect = async () => {
         if (!apiSession) return;
         setLoading(true);
@@ -110,25 +133,35 @@ export default function OptionChainLive() {
     };
 
     useEffect(() => {
-        if (authStatus?.authenticated) {
+        if (authStatus?.authenticated && selectedExpiry) {
             loadLiveNifty();
+            loadDataForExpiry(selectedExpiry);
         }
         if (authStatus?.authenticated && !wsRef.current) {
             const ws = new BreezeWS(
                 (tick) => {
                     setLiveTicks(prev => {
+                        // Use composite key from backend (_key = "STRIKE_RIGHT" for options, symbol for index)
+                        const tickKey = tick._key || tick.symbol || tick.stock_token || tick.stock_code;
                         const newTicks = {
                             ...prev,
-                            [tick.symbol || tick.stock_token || tick.stock_code]: tick
+                            [tickKey]: tick
                         };
-                        // Sync currentSpot if it's NIFTY and it's a trade tick
-                        if ((tick.symbol === 'NIFTY' || tick.stock_code === 'NIFTY') && tick.last) {
-                            setCurrentSpot(tick.last);
-                            updateLiveCandle(tick);
-                        }
-                        // Handle OHLC candle tick
-                        if ((tick.stock_code === 'NIFTY' || tick.symbol === 'NIFTY') && tick.open) {
-                            updateLiveCandleFromOhlc(tick);
+                        
+                        // Handle NIFTY Index updates
+                        if ((tick.symbol === 'NIFTY' || tick.stock_code === 'NIFTY' || tick._key === 'NIFTY')) {
+                            if (tick.last) {
+                                setLiveSpot(tick.last);
+                            }
+                            
+                            // OHLC Chart update: use candle ticks if available, otherwise raw ticks
+                            if (tick.type === 'ohlcv') {
+                                if (tick.interval === '1MIN') {
+                                    updateLiveCandleFromOhlc(tick);
+                                }
+                            } else if (tick.last) {
+                                updateLiveCandle(tick);
+                            }
                         }
                         return newTicks;
                     });
@@ -164,32 +197,33 @@ export default function OptionChainLive() {
         if (!authStatus?.authenticated) return;
         try {
             const now = new Date();
-            const todayStr = now.toISOString().split('T')[0];
+            let latestTradingDate = new Date(now);
             
-            // market open at 09:15 IST = 03:45 UTC
-            const marketOpenToday = new Date(todayStr + 'T03:45:00.000Z');
-            
-            let from_date, to_date;
-            
-            if (now < marketOpenToday) {
-                // Pre-market: Fetch last trading session (yesterday)
-                const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-                const yesterdayStr = yesterday.toISOString().split('T')[0];
-                from_date = yesterdayStr + 'T03:45:00.000Z';
-                to_date = yesterdayStr + 'T10:00:00.000Z'; // Yesterday's mid-day or close
-            } else {
-                // Market is open or post-market: Fetch from today's open to now
-                from_date = todayStr + 'T03:45:00.000Z';
-                // Use now but subtract a minute to be safe with server time diff
-                to_date = new Date(now.getTime() - 60000).toISOString();
+            // If it's Saturday (6) or Sunday (0), treat today as Friday
+            if (latestTradingDate.getDay() === 6) {
+                latestTradingDate.setDate(latestTradingDate.getDate() - 1);
+            } else if (latestTradingDate.getDay() === 0) {
+                latestTradingDate.setDate(latestTradingDate.getDate() - 2);
             }
 
-            // Safety check: ensure from_date < to_date
-            if (new Date(from_date) >= new Date(to_date)) {
-                // Return early or use a fallback
-                console.log("Skipping historical fetch: from_date >= to_date", { from_date, to_date });
-                return;
-            }
+            // Helper to get previous trading day
+            const getPrevTradingDay = (date: Date) => {
+                const prev = new Date(date);
+                do {
+                    prev.setDate(prev.getDate() - 1);
+                } while (prev.getDay() === 0 || prev.getDay() === 6);
+                return prev;
+            };
+
+            // Go back 2 trading days from the latest trading date
+            const prevDay1 = getPrevTradingDay(latestTradingDate);
+            const prevDay2 = getPrevTradingDay(prevDay1);
+
+            // from_date is the open of that 2nd previous day
+            const from_date = prevDay2.toISOString().split('T')[0] + 'T03:45:00.000Z';
+            
+            // to_date is now (subtract a minute to be safe with server time diff)
+            const to_date = new Date(now.getTime() - 60000).toISOString();
 
             console.log("Fetching Live Nifty Historical:", { from_date, to_date });
 
@@ -321,12 +355,7 @@ export default function OptionChainLive() {
         }
     };
 
-    const loadExpiries = async () => {
-        try {
-            const data = await dataApi.getExpiries();
-            setExpiries(data.expiries || []);
-        } catch (e) { console.error(e); }
-    };
+    // Expiry loading moved to loadBreezeExpiries since we use Breeze API now
 
     // Main loader for an expiry
     const loadDataForExpiry = async (expiry: string) => {
@@ -342,38 +371,98 @@ export default function OptionChainLive() {
                 expiry_date: expiry
             });
 
-            // Transform to app format
-            const formattedChain = quotes.map((q: any) => ({
-                Strike: parseFloat(q.strike_price),
-                Right: q.right,
-                Close: parseFloat(q.ltp || 0),
-                OI: parseInt(q.open_interest || 0),
-                Volume: parseInt(q.total_traded_quantity || 0),
-                token: q.stock_token,
-                symbol: q.symbol
-            }));
+            // Transform to app format (Breeze SDK Success array)
+            const formattedChain: any[] = [];
+            
+            quotes.forEach((q: any) => {
+                const strike = parseFloat(q.strike_price);
+                
+                // Add Call leg if present (SDK returns both in one object or separate? 
+                // Based on guide it's one object with call_ltp and put_ltp)
+                if (q.call_ltp !== undefined) {
+                    formattedChain.push({
+                        Strike: strike,
+                        Right: 'CE',
+                        Close: parseFloat(q.call_ltp || 0),
+                        OI: parseInt(q.call_oi || 0),
+                        Volume: parseInt(q.call_volume || 0),
+                        token: q.call_token || q.stock_token, // Guide doesn't show separate tokens for CE/PE in chain, but SDK might
+                        symbol: q.symbol
+                    });
+                }
+                
+                if (q.put_ltp !== undefined) {
+                    formattedChain.push({
+                        Strike: strike,
+                        Right: 'PE',
+                        Close: parseFloat(q.put_ltp || 0),
+                        OI: parseInt(q.put_oi || 0),
+                        Volume: parseInt(q.put_volume || 0),
+                        token: q.put_token || q.stock_token,
+                        symbol: q.symbol
+                    });
+                }
+            });
 
             setOptionChain(formattedChain);
 
-            // Subscribe to all tokens if WS is ready
-            if (wsRef.current && authStatus?.authenticated) {
-                const tokens = formattedChain.map((q: any) => q.token);
-                // Also subscribe to NIFTY spot
-                wsRef.current.subscribe(['NIFTY', ...tokens]);
+            // Subscribe to 20 ATM strikes (10 above, 10 below) via new subscribeOptions
+            if (wsRef.current && authStatus?.authenticated && liveSpot) {
+                const allStrikes = [...new Set(formattedChain.map((r: any) => r.Strike))].sort((a, b) => a - b);
+                const atmIdx = allStrikes.reduce((best, s, i) => 
+                    Math.abs(s - (liveSpot || 0)) < Math.abs(allStrikes[best] - (liveSpot || 0)) ? i : best, 0);
+                const startIdx = Math.max(0, atmIdx - 10);
+                const endIdx = Math.min(allStrikes.length, atmIdx + 10);
+                const nearStrikes = allStrikes.slice(startIdx, endIdx);
+                
+                // Format expiry for Breeze SDK (DD-MMM-YYYY -> YYYY-MM-DD)
+                const expiryParts = expiry.split('-');
+                const months: Record<string, string> = { Jan:'01', Feb:'02', Mar:'03', Apr:'04', May:'05', Jun:'06', Jul:'07', Aug:'08', Sep:'09', Oct:'10', Nov:'11', Dec:'12' };
+                const expiryIso = `${expiryParts[2]}-${months[expiryParts[1]] || '01'}-${expiryParts[0]}`;
+                
+                // For NIFTY option strikes, we subscribe to BOTH TBT (for highest speed LTP)
+                // and 1SEC OHLCV (for reliable OI and Volume updates).
+                const subs: any[] = [];
+                nearStrikes.forEach(strike => {
+                    subs.push({ stock_code: 'NIFTY', exchange_code: 'NFO', product_type: 'options', expiry_date: expiryIso, strike_price: String(strike), right: 'call' });
+                    subs.push({ stock_code: 'NIFTY', exchange_code: 'NFO', product_type: 'options', expiry_date: expiryIso, strike_price: String(strike), right: 'put' });
+                });
+                
+                console.log(`Subscribing to ${subs.length} strikes via TBT and OHLCV...`);
+                wsRef.current.subscribeOptions(subs);
+                
+                // Trigger 1SEC OHLCV specifically for these strikes if not already covered by backend subscribeOptions
+                // Note: Index is handled in the connection block.
             }
 
         } catch (e: any) {
-            console.error("Failed to load live chain:", e);
+            console.error("Failed to load live option chain from Breeze:", e);
+            setOptionChain([]); // Must clear chain so we don't show old data
+            
             if (e.message?.includes('401') || e.message?.toLowerCase().includes('session expired') || e.message?.toLowerCase().includes('login')) {
                 setAuthStatus(prev => prev ? { ...prev, authenticated: false } : { authenticated: false });
                 alert("Breeze session expired. Please re-login.");
             } else {
-                alert("Failed to load live chain: " + e.message);
+                alert("Failed to load live chain: " + (e.message || "Unknown error"));
             }
         } finally {
             setLoading(false);
         }
     };
+
+    // Auto-refresh option chain every 30 seconds for live OI/Volume updates
+    useEffect(() => {
+        if (!authStatus?.authenticated || !selectedExpiry) return;
+        
+        // Don't setup interval if it's the weekend (market is closed)
+        const day = new Date().getDay();
+        if (day === 0 || day === 6) return;
+
+        const interval = setInterval(() => {
+            loadDataForExpiry(selectedExpiry);
+        }, 30000);
+        return () => clearInterval(interval);
+    }, [authStatus?.authenticated, selectedExpiry]);
 
     const loadSpikes = async (expiry: string, threshold: number, volThreshold: number, minLtp: number) => {
         setSpikeLoading(true);
@@ -519,9 +608,9 @@ export default function OptionChainLive() {
     const currentTimestamp = timestamps[currentIndex] || '';
     
     // Improved spot/future lookup (more robust than exact string match)
-    const { currentSpot, currentFuture } = useMemo(() => {
+    const { stepperSpot, stepperFuture } = useMemo(() => {
         if (!currentTimestamp || (indexData.length === 0 && futuresData.length === 0)) {
-            return { currentSpot: undefined, currentFuture: undefined };
+            return { stepperSpot: undefined, stepperFuture: undefined };
         }
         
         const targetUnix = parseTimestamp(currentTimestamp);
@@ -534,8 +623,8 @@ export default function OptionChainLive() {
                       futuresData.find(d => Math.abs(parseTimestamp(d.Date) - targetUnix) < 60);
 
         return {
-            currentSpot: spotPt?.Close,
-            currentFuture: futPt?.Close
+            stepperSpot: spotPt?.Close,
+            stepperFuture: futPt?.Close
         };
     }, [currentTimestamp, indexData, futuresData]);
 
@@ -578,11 +667,12 @@ export default function OptionChainLive() {
 
     // Strategy Advisor Logic
     const advisorSignal = useMemo(() => {
-        if (!currentSpot || topCallOiStrikes.length === 0 || topPutOiStrikes.length === 0) return null;
+        const spot = liveSpot || stepperSpot;
+        if (!spot || topCallOiStrikes.length === 0 || topPutOiStrikes.length === 0) return null;
 
         const R1 = topCallOiStrikes[0];
         const S1 = topPutOiStrikes[0];
-        const spot = currentSpot;
+        // const spot = currentSpot; // Removed duplicate declaration
 
         // Threshold for "Inside Zone" (e.g., 0.2% of spot)
         const zoneThreshold = spot * 0.002;
@@ -623,7 +713,7 @@ export default function OptionChainLive() {
                 color: 'var(--blue)'
             };
         }
-    }, [currentSpot, topCallOiStrikes, topPutOiStrikes]);
+    }, [liveSpot, stepperSpot, topCallOiStrikes, topPutOiStrikes]);
  
     // Max Pain Calculation Logic
     const maxPain = useMemo(() => {
@@ -660,9 +750,9 @@ export default function OptionChainLive() {
     return maxPainStrike;
     }, [optionChain]);
 
-    // OI Commentary Logic (Expert Edition)
     const oiCommentary = useMemo(() => {
-        if (!optionChain || optionChain.length === 0 || !currentSpot || topCallOiStrikes.length === 0 || topPutOiStrikes.length === 0) return null;
+        const spot = liveSpot || stepperSpot;
+        if (!optionChain || optionChain.length === 0 || !spot || topCallOiStrikes.length === 0 || topPutOiStrikes.length === 0) return null;
 
         const totalCallOi = optionChain.filter((r: any) => r.Right === 'CE').reduce((acc: number, r: any) => acc + (r.OI || 0), 0);
         const totalPutOi = optionChain.filter((r: any) => r.Right === 'PE').reduce((acc: number, r: any) => acc + (r.OI || 0), 0);
@@ -670,7 +760,7 @@ export default function OptionChainLive() {
 
         const callR1 = topCallOiStrikes[0];
         const putS1 = topPutOiStrikes[0];
-        const spot = currentSpot;
+        // const spot = currentSpot; // already defined above
         const mp = maxPain;
 
         let sentiment = 'Neutral';
@@ -713,7 +803,7 @@ export default function OptionChainLive() {
         if (strongPull && mp) message += ` MP ${mp} pull: ${mpPull}.`;
 
         return { sentiment, message, color, pcr, action };
-    }, [optionChain, currentSpot, topCallOiStrikes, topPutOiStrikes, maxPain]);
+    }, [optionChain, liveSpot, stepperSpot, topCallOiStrikes, topPutOiStrikes, maxPain]);
 
 
     // Candlestick Chart Initialization
@@ -849,8 +939,8 @@ export default function OptionChainLive() {
         return strikes.reduce((prev, curr) => Math.abs(curr - val) < Math.abs(prev - val) ? curr : prev);
     };
 
-    const closestSpotStrike = getClosestStrike(currentSpot);
-    const closestFutureStrike = getClosestStrike(currentFuture);
+    const closestSpotStrike = getClosestStrike(liveSpot || stepperSpot);
+    const closestFutureStrike = getClosestStrike(stepperFuture);
 
     // Helper to find strike at offset
     const getStrikeAtOffset = (startStrike: number, offset: number) => {
@@ -868,7 +958,8 @@ export default function OptionChainLive() {
     };
 
     const recommendedStrategy = useMemo(() => {
-        if (!oiCommentary || !currentSpot || strikes.length === 0) return null;
+        const spot = liveSpot || stepperSpot;
+        if (!oiCommentary || !spot || strikes.length === 0) return null;
         
         const atm = closestSpotStrike || strikes[Math.floor(strikes.length/2)];
         const legs: any[] = [];
@@ -912,7 +1003,7 @@ export default function OptionChainLive() {
         });
 
         return { name, legs: hydratedLegs, timestamp: currentTimestamp, action: oiCommentary.action };
-    }, [oiCommentary, currentSpot, optionChain, strikes, closestSpotStrike, currentTimestamp]);
+    }, [oiCommentary, liveSpot, stepperSpot, optionChain, strikes, closestSpotStrike, currentTimestamp]);
 
     // Automated Trade Lifecycle Management
     const lastActionRef = useRef<string | null>(null);
@@ -929,7 +1020,7 @@ export default function OptionChainLive() {
                 setTradeHistory(prev => [{
                     ...trackedStrategy,
                     exitTimestamp: currentTimestamp,
-                    exitSpot: currentSpot,
+                    exitSpot: liveSpot || stepperSpot,
                     finalPnl
                 }, ...prev]);
             }
@@ -1000,8 +1091,8 @@ export default function OptionChainLive() {
 
             const payload = {
                 expiry: selectedExpiry,
-                spot_price: currentSpot || 0,
-                futures_price: currentFuture || 0,
+                spot_price: (liveSpot || stepperSpot) || 0,
+                futures_price: stepperFuture || 0,
                 option_chain: subsetChain,
                 spikes: oiSpikes.slice(0, 50),
                 timestamp: currentTimestamp,
@@ -1023,10 +1114,10 @@ export default function OptionChainLive() {
     // Prepare OI Data for the chart
     const oiData = useMemo(() => {
         return strikes.map(strike => {
-            const ce = optionChain.find((r: any) => r.Strike === strike && r.Right === 'CE') || {};
-            const pe = optionChain.find((r: any) => r.Strike === strike && r.Right === 'PE') || {};
-            const ceTick = liveTicks[ce.token] || {};
-            const peTick = liveTicks[pe.token] || {};
+            const ce = optionChain.find((r: any) => r.Strike === strike && r.Right === 'CE') || {} as any;
+            const pe = optionChain.find((r: any) => r.Strike === strike && r.Right === 'PE') || {} as any;
+            const ceTick = liveTicks[`${strike}_CE`] || {};
+            const peTick = liveTicks[`${strike}_PE`] || {};
             return {
                 strike,
                 ce_oi: ceTick.oi || ce.OI || 0,
@@ -1086,15 +1177,26 @@ export default function OptionChainLive() {
             <div className="card" style={{ marginBottom: 16, padding: '12px 20px', background: 'var(--bg-secondary)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
                     <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end' }}>
-                        <div className="form-group" style={{ margin: 0, minWidth: 200 }}>
-                            <label className="form-label">Select Expiry for Chain</label>
-                            <select className="form-select" value={selectedExpiry}
-                                onChange={e => loadDataForExpiry(e.target.value)}>
-                                <option value="">Select expiry...</option>
-                                {expiries.map((e: any) => (
-                                    <option key={e.folder} value={e.folder}>{e.folder} ({e.date})</option>
-                                ))}
-                            </select>
+                        <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end', background: 'rgba(59, 130, 246, 0.05)', padding: '6px 16px', borderRadius: 8, border: '1px solid rgba(59, 130, 246, 0.1)' }}>
+                            <div style={{ textAlign: 'left' }}>
+                                <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 2 }}>Option Expiry</div>
+                                {availableExpiries.length > 0 ? (
+                                    <select
+                                        className="form-select"
+                                        value={selectedExpiry}
+                                        onChange={e => { setSelectedExpiry(e.target.value); loadDataForExpiry(e.target.value); }}
+                                        style={{ height: 32, fontSize: 13, fontWeight: 700, color: 'var(--blue)', background: 'transparent', border: 'none', padding: '0 4px' }}
+                                    >
+                                        {availableExpiries.map((exp: any) => (
+                                            <option key={exp.expiry} value={exp.expiry}>
+                                                {exp.expiry} {exp.is_monthly ? '(Monthly)' : ''} — {exp.days_to_expiry}d
+                                            </option>
+                                        ))}
+                                    </select>
+                                ) : (
+                                    <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--blue)' }}>{selectedExpiry || 'Loading...'}</div>
+                                )}
+                            </div>
                         </div>
                         <div className="form-group" style={{ margin: 0 }}>
                             <label className="form-label">Strike Filter</label>
@@ -1115,7 +1217,7 @@ export default function OptionChainLive() {
                         <div style={{ textAlign: 'right' }}>
                             <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>NIFTY 50 SPOT</div>
                             <div style={{ fontSize: '20px', fontWeight: 700, color: 'var(--text-primary)' }}>
-                                {liveTicks['NIFTY']?.last || currentSpot || '---'}
+                                {liveSpot || stepperSpot || '---'}
                                 <span style={{ fontSize: 12, marginLeft: 8, color: (liveTicks['NIFTY']?.change || 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>
                                     {(liveTicks['NIFTY']?.change_pc || 0).toFixed(2)}%
                                 </span>
@@ -1180,8 +1282,8 @@ export default function OptionChainLive() {
                     {/* OI Buildup Chart */}
                     <div className="card fade-in" style={{ margin: 0 }}>
                         <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <div className="card-title" onClick={() => setIsChartCollapsed(!isChartCollapsed)} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-                                <span>{isChartCollapsed ? '▶' : '▼'}</span>
+                            <div className="card-title" onClick={() => setIsOiBuildupCollapsed(!isOiBuildupCollapsed)} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span>{isOiBuildupCollapsed ? '▶' : '▼'}</span>
                                 OI Buildup (Open Interest)
                                 {maxPain && (
                                     <span style={{ 
@@ -1216,7 +1318,7 @@ export default function OptionChainLive() {
                                 )}
                             </div>
                         </div>
-                        {!isChartCollapsed && (
+                        {!isOiBuildupCollapsed && (
                             <div style={{ height: 350, width: '100%', padding: '10px 0' }}>
                                 <ResponsiveContainer width="100%" height="100%">
                                     <BarChart data={oiData} margin={{ top: 10, right: 30, left: 20, bottom: 20 }}>
@@ -1461,6 +1563,22 @@ export default function OptionChainLive() {
                                 </span>
                             </div>
                             <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                                <button 
+                                    className="btn btn-secondary" 
+                                    onClick={() => loadDataForExpiry(selectedExpiry)}
+                                    disabled={loading || !selectedExpiry}
+                                    style={{ 
+                                        padding: '4px 12px', 
+                                        fontSize: 12,
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: 6,
+                                        background: 'rgba(255, 255, 255, 0.05)',
+                                        border: '1px solid var(--border-color)'
+                                    }}
+                                >
+                                    {loading ? '...' : '🔄'} Refresh Chain
+                                </button>
                                 {metrics.load_time_ms !== undefined && (
                                     <div style={{ display: 'flex', gap: 12, fontSize: 11 }}>
                                         <div className="badge" style={{ background: 'rgba(59, 130, 246, 0.1)', color: 'var(--blue)' }}>
@@ -1503,10 +1621,10 @@ export default function OptionChainLive() {
                                     </thead>
                                     <tbody>
                                         {strikes.map((strike: number, i: number) => {
-                                            const ce = optionChain.find((r: any) => r.Strike === strike && r.Right === 'CE') || {};
-                                            const pe = optionChain.find((r: any) => r.Strike === strike && r.Right === 'PE') || {};
-                                            const ceTick = liveTicks[ce.token] || {};
-                                            const peTick = liveTicks[pe.token] || {};
+                                            const ce = optionChain.find((r: any) => r.Strike === strike && r.Right === 'CE') || {} as any;
+                                            const pe = optionChain.find((r: any) => r.Strike === strike && r.Right === 'PE') || {} as any;
+                                            const ceTick = liveTicks[`${strike}_CE`] || {} as any;
+                                            const peTick = liveTicks[`${strike}_PE`] || {} as any;
                                             const isSpotATM = strike === closestSpotStrike;
                                             const isFutureATM = strike === closestFutureStrike;
 

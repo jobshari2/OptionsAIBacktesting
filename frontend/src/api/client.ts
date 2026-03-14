@@ -228,7 +228,8 @@ export const breezeApi = {
     }) => {
         const qs = new URLSearchParams(params as any).toString();
         return fetchJSON(`/api/breeze/option-chain?${qs}`);
-    }
+    },
+    getExpiries: () => fetchJSON('/api/breeze/expiries'),
 };
 
 export class BreezeWS {
@@ -275,6 +276,19 @@ export class BreezeWS {
     subscribe(tokens: string[]) {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify({ command: 'subscribe', tokens }));
+        }
+    }
+
+    subscribeOptions(subscriptions: Array<{
+        stock_code: string;
+        exchange_code: string;
+        product_type: string;
+        expiry_date: string;
+        strike_price: string;
+        right: string;
+    }>) {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ command: 'subscribe_options', subscriptions }));
         }
     }
 

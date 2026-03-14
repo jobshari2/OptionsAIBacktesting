@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime, timedelta
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pathlib import Path
@@ -127,10 +128,50 @@ def get_option_chain_meta(
             expiry_date=expiry_date
         )
     except ValueError as exc:
+        logger.warning(f"Validation error in option-chain: {exc}")
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        logger.error(f"Failed to fetch option chain: {exc}")
-        raise HTTPException(status_code=500, detail="Failed to fetch option chain")
+        logger.exception(f"Unexpected failure in option-chain endpoint: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch option chain: {str(exc)}")
+
+@router.get("/expiries")
+def get_nifty_expiries():
+    """Compute upcoming NIFTY weekly and monthly expiries.
+    NIFTY weekly expiry is every Tuesday. Monthly expiry is last Tuesday of month.
+    Returns current + next 8 weekly expiries.
+    """
+    try:
+        today = datetime.now()
+        expiries = []
+        
+        # Find current week's Tuesday (weekday 1 = Tuesday)
+        days_until_tuesday = (1 - today.weekday()) % 7
+        if days_until_tuesday == 0 and today.hour >= 15 and today.minute >= 30:
+            # If it's Tuesday after market close, move to next week
+            days_until_tuesday = 7
+        
+        current_tuesday = today + timedelta(days=days_until_tuesday)
+        
+        # Generate next 8 weekly expiries
+        for i in range(8):
+            expiry_date = current_tuesday + timedelta(weeks=i)
+            expiry_str = expiry_date.strftime("%d-%b-%Y")  # e.g. "17-Mar-2026"
+            expiries.append({
+                "expiry": expiry_str,
+                "expiry_iso": expiry_date.strftime("%Y-%m-%d"),
+                "is_monthly": _is_last_tuesday_of_month(expiry_date),
+                "days_to_expiry": (expiry_date.date() - today.date()).days
+            })
+        
+        return {"expiries": expiries}
+    except Exception as exc:
+        logger.exception(f"Failed to compute expiries: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+def _is_last_tuesday_of_month(dt: datetime) -> bool:
+    """Check if a given Tuesday is the last Tuesday of its month."""
+    next_tuesday = dt + timedelta(weeks=1)
+    return next_tuesday.month != dt.month
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, auth: BreezeAuth = Depends(get_auth)):
@@ -161,6 +202,9 @@ async def websocket_endpoint(websocket: WebSocket, auth: BreezeAuth = Depends(ge
                     if cmd == "subscribe":
                         tokens = data.get("tokens", [])
                         streamer.subscribe(tokens)
+                    elif cmd == "subscribe_options":
+                        subscriptions = data.get("subscriptions", [])
+                        streamer.subscribe_options(subscriptions)
                     elif cmd == "subscribe_ohlc":
                         tokens = data.get("tokens", [])
                         interval = data.get("interval", "1minute")

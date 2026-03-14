@@ -1,0 +1,14 @@
+2026-03-13 11:55:14,288 - <Response [401]>
+2026-03-13 11:55:14,292 - Get Option chain Quotes response : {'Status': 5, 'Error': 'Authentication Fail :: Invalid Checksum.'}
+2026-03-13 11:55:15,200 - <Response [401]>
+2026-03-13 11:55:15,202 - Get Option chain Quotes response : {'Status': 5, 'Error': 'Authentication Fail :: Invalid Checksum.'}
+2026-03-13 11:56:12,002 - <Response [401]>
+2026-03-13 11:56:12,004 - Get Option chain Quotes response : {'Status': 5, 'Error': 'Authentication Fail :: Invalid Checksum.'}
+2026-03-13 11:57:00,820 - <Response [401]>
+2026-03-13 11:57:00,823 - Get funds response: {'Status': 5, 'Error': 'Authentication Fail :: Invalid Checksum.'}
+2026-03-13 11:58:06,558 - <Response [401]>
+2026-03-13 11:58:06,564 - Get funds response: {'Status': 5, 'Error': 'Authentication Fail :: Invalid Checksum.'}
+2026-03-13 11:58:36,475 - <Response [401]>
+2026-03-13 11:58:36,590 - Get Option chain Quotes response : {'Status': 5, 'Error': 'Authentication Fail :: Invalid Checksum.'}
+2026-03-13 11:58:38,166 - <Response [401]>
+2026-03-13 11:58:38,175 - Get Option chain Quotes response : {'Status': 5, 'Error': 'Authentication Fail :: Invalid Checksum.'}
